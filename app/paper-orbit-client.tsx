@@ -570,7 +570,7 @@ export default function PaperOrbitClient({
           paper,
           action: "report",
           prompt:
-            "生成结构化中文阅读报告：研究问题、核心方法、关键贡献、证据强弱、局限、与我兴趣的关系、三个追问。",
+            "请用自然、连贯的简体中文生成结构化阅读报告：研究问题、核心方法、关键贡献、证据强弱、局限、与我兴趣的关系、三个追问。请综合归纳，不要逐句翻译、复述或大段复制摘要；仅保留必要的模型名、数据集名、公式和公认英文缩写，并明确区分摘要事实、合理推断与需要正文核验的内容。",
         }),
       });
       if (!response.ok) throw new Error("report unavailable");
