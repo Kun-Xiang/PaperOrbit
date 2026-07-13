@@ -203,6 +203,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .score-block strong { display: block; margin-top: 5px; font: 400 28px/1 var(--serif); color: var(--red); }
 .score-line { width: 74px; height: 2px; margin-top: 8px; background: var(--line); }
 .score-line i { display: block; height: 2px; background: var(--red); }
+.score-reason {
+  display: block;
+  max-width: 145px;
+  margin-top: 9px;
+  color: var(--ink-soft);
+  font: 600 7.5px/1.45 var(--sans);
+  letter-spacing: .025em;
+}
 .read-time { margin-top: 13px; color: var(--muted); font-size: 9px; }
 .paper-actions { margin-top: auto; width: 100%; display: grid; gap: 7px; }
 .paper-actions button { min-height: 28px; border: 0; background: none; padding: 5px 0; text-align: left; font-size: 9px; cursor: pointer; transition: all .2s ease; }

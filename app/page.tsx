@@ -29,7 +29,23 @@ type Paper = {
   url: string;
   pdfUrl: string;
   tags: string[];
+  recommendation?: {
+    reason: string;
+    matchedInterests: string[];
+    signals: {
+      relevance: number;
+      affinity: number;
+      freshness: number;
+      influence: number;
+      evidence: number;
+    };
+    citationCount?: number;
+    influentialCitationCount?: number;
+    exploration?: boolean;
+  };
 };
+
+type AffinityProfile = Record<string, number>;
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -50,6 +66,8 @@ const DEFAULT_INTERESTS = [
   "Multimodal Reasoning",
   "Embodied Intelligence",
 ];
+
+const DAILY_PAPER_COUNT = 10;
 
 const INTEREST_OPTIONS = [
   "Physical AI",
@@ -148,6 +166,91 @@ const SEED_PAPERS: Paper[] = [
     pdfUrl: "https://arxiv.org/pdf/2607.09661",
     tags: ["World Models", "3D Vision", "Generation"],
   },
+  {
+    id: "2607.09655",
+    title: "OpenLongTail: Generative Scaling of Long-Tail Driving Data",
+    authors: ["Lulin Liu", "Nuo Chen", "Yan Wang", "Bangya Liu", "Wenyan Cong", "Marco Pavone"],
+    summary:
+      "OpenLongTail is an open-source generative data engine that converts heterogeneous in-the-wild driving videos into view-aligned, temporally coherent multi-view assets for long-tail policy learning.",
+    zhSummary:
+      "把异构的真实长尾驾驶视频补全为视角对齐、时序一致的多视图训练数据，并在闭环测试中验证其对极端场景鲁棒性的提升。",
+    published: "2026-07-10",
+    category: "cs.CV",
+    categories: ["cs.CV"],
+    score: 90,
+    minutes: 20,
+    url: "https://arxiv.org/abs/2607.09655",
+    pdfUrl: "https://arxiv.org/pdf/2607.09655",
+    tags: ["Autonomous Driving", "Generative Data", "Embodied AI"],
+  },
+  {
+    id: "2607.09648",
+    title: "B-spline Policy: Accelerating Manipulation Policies via B-spline Action Representations",
+    authors: ["Xiaoshen Han", "Haoyu Xiong", "Haonan Chen", "Chaoqi Liu", "Antonio Torralba", "Yuke Zhu", "Yilun Du"],
+    summary:
+      "B-spline Policy replaces discrete action chunks with continuous B-spline curves, allowing robot policies to execute smoother trajectories at higher frequencies and speeds.",
+    zhSummary:
+      "用连续 B 样条曲线替代离散动作块，让操作策略生成可缩放的平滑轨迹，在保持成功率的同时缩短任务完成时间。",
+    published: "2026-07-10",
+    category: "cs.RO",
+    categories: ["cs.RO"],
+    score: 92,
+    minutes: 17,
+    url: "https://arxiv.org/abs/2607.09648",
+    pdfUrl: "https://arxiv.org/pdf/2607.09648",
+    tags: ["Robot Learning", "Manipulation", "Action Representation"],
+  },
+  {
+    id: "2607.09629",
+    title: "4DR360: State Reasoning for Joint 3D Detection and Occupancy Prediction",
+    authors: ["Xiaokai Bai", "Lianqing Zheng", "Runwei Guan", "Songkai Wang", "Siyuan Cao", "Hui-liang Shen"],
+    summary:
+      "4DR360 treats semantic occupancy as a persistent scene state and propagates it through radar-camera fusion stages for joint 3D detection and occupancy prediction.",
+    zhSummary:
+      "将语义占用建模为持续传播的场景状态，把 4D 雷达与相机信息用于统一的三维检测和占用预测，并覆盖鲁棒性与效率评估。",
+    published: "2026-07-10",
+    category: "cs.CV",
+    categories: ["cs.CV", "cs.AI"],
+    score: 87,
+    minutes: 19,
+    url: "https://arxiv.org/abs/2607.09629",
+    pdfUrl: "https://arxiv.org/pdf/2607.09629",
+    tags: ["Autonomous Driving", "3D Perception", "Multimodal"],
+  },
+  {
+    id: "2607.09590",
+    title: "PAC-ACT: Post-training Actor-Critic for Action Chunking Transformers",
+    authors: ["Yujie Pang", "Zudong Li"],
+    summary:
+      "PAC-ACT adds chunk-level reinforcement-learning post-training to pretrained Action Chunking Transformers for precision contact manipulation under pose and force constraints.",
+    zhSummary:
+      "在预训练 ACT 策略上进行动作块级 actor-critic 后训练，用行为先验约束缓解接触操作中的分布偏移，同时保持低延迟。",
+    published: "2026-07-10",
+    category: "cs.RO",
+    categories: ["cs.RO", "cs.AI"],
+    score: 91,
+    minutes: 18,
+    url: "https://arxiv.org/abs/2607.09590",
+    pdfUrl: "https://arxiv.org/pdf/2607.09590",
+    tags: ["Robot Learning", "Actor-Critic", "Contact-Rich Manipulation"],
+  },
+  {
+    id: "2607.09587",
+    title: "CoDiMAD: Diffusion-Based Privileged Distillation for Communication-Free Multi-Robot Coordination",
+    authors: ["Jiyue Tao", "Shunheng Xin", "Tongsheng Shen", "Dexin Zhao", "Feitian Zhang"],
+    summary:
+      "CoDiMAD distills a globally informed multi-robot oracle into decentralized diffusion policies that preserve multimodal cooperative actions under partial observability.",
+    zhSummary:
+      "将全局信息 oracle 蒸馏为去中心化扩散策略，避免确定性蒸馏把多模态协作动作平均掉，面向无通信、多机器人协同。",
+    published: "2026-07-10",
+    category: "cs.RO",
+    categories: ["cs.RO"],
+    score: 89,
+    minutes: 21,
+    url: "https://arxiv.org/abs/2607.09587",
+    pdfUrl: "https://arxiv.org/pdf/2607.09587",
+    tags: ["Multi-Robot", "Diffusion Policy", "Embodied AI"],
+  },
 ];
 
 const STORAGE = {
@@ -155,7 +258,8 @@ const STORAGE = {
   read: "paper-orbit:read",
   reports: "paper-orbit:reports",
   interests: "paper-orbit:interests",
-  refresh: "paper-orbit:last-refresh",
+  affinity: "paper-orbit:affinity-v2",
+  refresh: "paper-orbit:last-refresh-v2",
 };
 
 function uniquePapers(...groups: Paper[][]) {
@@ -193,11 +297,12 @@ export default function Home() {
   const [readIds, setReadIds] = useState<Set<string>>(new Set());
   const [reports, setReports] = useState<ReadingReport[]>([]);
   const [interests, setInterests] = useState(DEFAULT_INTERESTS);
+  const [affinity, setAffinity] = useState<AffinityProfile>({});
   const [draftInterests, setDraftInterests] = useState(DEFAULT_INTERESTS);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [ready, setReady] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [refreshNote, setRefreshNote] = useState("编辑部选刊 · 每日更新");
+  const [refreshNote, setRefreshNote] = useState("多信号选刊 · 每日更新");
   const [copilotPaperId, setCopilotPaperId] = useState(SEED_PAPERS[0].id);
   const [aiInput, setAiInput] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
@@ -230,13 +335,18 @@ export default function Home() {
       localStorage.getItem(STORAGE.interests),
       DEFAULT_INTERESTS,
     );
+    const storedAffinity = safeParse<AffinityProfile>(
+      localStorage.getItem(STORAGE.affinity),
+      {},
+    );
     setInterests(storedInterests);
+    setAffinity(storedAffinity);
     setDraftInterests(storedInterests);
     setReady(true);
 
     const today = new Date().toISOString().slice(0, 10);
     if (localStorage.getItem(STORAGE.refresh) !== today) {
-      void refreshDaily(storedInterests, true);
+      void refreshDaily(storedInterests, true, storedAffinity);
     }
   }, []);
 
@@ -254,6 +364,11 @@ export default function Home() {
     if (!ready) return;
     localStorage.setItem(STORAGE.reports, JSON.stringify(reports));
   }, [ready, reports]);
+
+  useEffect(() => {
+    if (!ready) return;
+    localStorage.setItem(STORAGE.affinity, JSON.stringify(affinity));
+  }, [ready, affinity]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -276,31 +391,67 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  async function refreshDaily(nextInterests = interests, silent = false) {
+  async function refreshDaily(
+    nextInterests = interests,
+    silent = false,
+    nextAffinity = affinity,
+  ) {
     setRefreshing(true);
-    if (!silent) setRefreshNote("正在扫描最新 arXiv 提交…");
+    if (!silent) setRefreshNote("正在扫描候选池并重新排序…");
     try {
+      const affinityTerms = Object.entries(nextAffinity)
+        .sort(([, left], [, right]) => right - left)
+        .slice(0, 10)
+        .map(([term]) => term);
       const params = new URLSearchParams({
         mode: "feed",
         interests: nextInterests.join(","),
       });
+      if (affinityTerms.length) params.set("profile", affinityTerms.join("|"));
       const response = await fetch(`/api/arxiv?${params.toString()}`);
       if (!response.ok) throw new Error("feed unavailable");
-      const data = (await response.json()) as { papers?: Paper[] };
+      const data = (await response.json()) as {
+        papers?: Paper[];
+        source?: string;
+        meta?: { candidateCount?: number; rankingVersion?: string };
+      };
       if (data.papers && data.papers.length >= 3) {
-        setFeed(data.papers.slice(0, 5));
+        const nextFeed = uniquePapers(data.papers, SEED_PAPERS).slice(
+          0,
+          DAILY_PAPER_COUNT,
+        );
+        setFeed(nextFeed);
         localStorage.setItem(
           STORAGE.refresh,
           new Date().toISOString().slice(0, 10),
         );
-        setRefreshNote("刚刚同步 · arXiv 实时选刊");
-        if (!silent) setToast("今日选刊已更新");
+        const candidateCount = data.meta?.candidateCount ?? data.papers.length;
+        const sourceLabel = data.source?.includes("semantic-scholar")
+          ? "影响力信号已校准"
+          : "arXiv 多信号排序";
+        setRefreshNote(`从 ${candidateCount} 篇候选中精选 · ${sourceLabel}`);
+        if (!silent) setToast("今日 10 篇选刊已重新排序");
       }
     } catch {
       setRefreshNote("编辑部缓存 · 网络恢复后自动更新");
     } finally {
       setRefreshing(false);
     }
+  }
+
+  function learnFromPaper(paper: Paper, weight: number) {
+    const signals = Array.from(
+      new Set([paper.category, ...(paper.categories ?? []), ...paper.tags]),
+    ).filter(Boolean);
+    setAffinity((current) => {
+      const next = { ...current };
+      for (const signal of signals) {
+        const value = Math.max(0, Math.min(12, (next[signal] ?? 0) + weight));
+        if (value <= 0.05) delete next[signal];
+        else next[signal] = Number(value.toFixed(2));
+      }
+      return next;
+    });
   }
 
   async function submitSearch(event?: FormEvent, queryOverride?: string) {
@@ -338,6 +489,8 @@ export default function Home() {
   }
 
   function toggleSaved(id: string) {
+    const paper = allPapers.find((item) => item.id === id);
+    const wasSaved = savedIds.has(id);
     setSavedIds((current) => {
       const next = new Set(current);
       if (next.has(id)) {
@@ -349,9 +502,11 @@ export default function Home() {
       }
       return next;
     });
+    if (paper) learnFromPaper(paper, wasSaved ? -0.6 : 1);
   }
 
   function startReading(paper: Paper) {
+    if (!readIds.has(paper.id)) learnFromPaper(paper, 1.5);
     setReadIds((current) => new Set(current).add(paper.id));
     window.open(paper.url, "_blank", "noopener,noreferrer");
   }
@@ -422,6 +577,7 @@ export default function Home() {
       };
       setReports((current) => [report, ...current]);
       setActiveReport(report);
+      learnFromPaper(paper, 2);
       setReadIds((current) => new Set(current).add(paper.id));
       setToast("阅读报告已生成并保存");
     } catch {
@@ -633,7 +789,9 @@ export default function Home() {
             </button>
             <p className="eyebrow">PERSONAL EDITOR</p>
             <h2 id="interest-title">定义你的研究轨道</h2>
-            <p>每天的自动选刊会优先匹配这些方向。选择 2–5 个通常最有效。</p>
+            <p>
+              每天从扩展候选池中精选 10 篇；兴趣决定主轨道，保存、开始阅读和生成报告会持续校准排序。选择 2–5 个方向通常最有效。
+            </p>
             <div className="interest-grid">
               {INTEREST_OPTIONS.map((interest) => (
                 <button
@@ -750,6 +908,9 @@ function PaperEntry({
           <div className="score-line" aria-label={`推荐分 ${paper.score} 分`}>
             <i style={{ width: `${paper.score}%` }} />
           </div>
+          <small className="score-reason">
+            {paper.recommendation?.reason ?? "兴趣、时效与研究信号综合排序"}
+          </small>
         </div>
         <span className="read-time">预计 {paper.minutes} 分钟</span>
         <div className="paper-actions">
@@ -802,20 +963,37 @@ function TodayView(props: TodayViewProps) {
   const completedThisWeek = Math.min(props.readIds.size, 10);
   const progress = Math.min(100, Math.max(10, completedThisWeek * 10));
   const quickPrompts = ["用三句话解释核心贡献", "和同领域代表工作比较", "指出最值得复现的实验"];
+  const today = new Date();
+  const weekday = new Intl.DateTimeFormat("en-US", { weekday: "short" })
+    .format(today)
+    .toUpperCase();
+  const monthYear = new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    year: "numeric",
+  })
+    .format(today)
+    .replace(" ", " · ")
+    .toUpperCase();
+  const startOfYear = new Date(today.getFullYear(), 0, 0);
+  const edition = Math.floor(
+    (today.getTime() - startOfYear.getTime()) / 86_400_000,
+  );
 
   return (
     <div className="page-wrap">
       <section className="edition-header">
         <div className="edition-date">
-          <span>MON</span>
-          <strong>13</strong>
-          <span>JUL · 2026</span>
+          <span>{weekday}</span>
+          <strong>{today.getDate()}</strong>
+          <span>{monthYear}</span>
         </div>
         <div className="edition-title">
-          <p className="eyebrow">DAILY ORBIT · EDITION 027</p>
+          <p className="eyebrow">
+            DAILY ORBIT · EDITION {String(edition).padStart(3, "0")}
+          </p>
           <h1>今天值得读的 <em>{props.feed.length}</em> 篇</h1>
           <p className="edition-deck">
-            从最新提交中筛出与你的研究轨道最相关、最值得投入注意力的工作。
+            综合兴趣匹配、阅读反馈、时效、影响力与证据质量，再做主题去重，保留 10 篇最值得投入注意力的工作。
           </p>
         </div>
         <div className="edition-controls">
