@@ -4,6 +4,7 @@ import {
   type CandidatePaper,
   type InfluenceSignal,
 } from "./recommendation";
+import { paperOrbitApiAccessError } from "../../access-control";
 
 const DEFAULT_INTERESTS = [
   "Physical AI",
@@ -146,6 +147,9 @@ function searchExpression(query: string) {
 }
 
 export async function GET(request: Request) {
+  const accessError = await paperOrbitApiAccessError();
+  if (accessError) return accessError;
+
   const url = new URL(request.url);
   const mode = url.searchParams.get("mode");
   const q = (url.searchParams.get("q") ?? "")

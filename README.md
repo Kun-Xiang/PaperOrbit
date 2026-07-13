@@ -42,7 +42,9 @@ npm test         # 构建并验证产品页面与推荐管线
 
 ## 主要目录
 
-- `app/page.tsx`：站点交互、兴趣画像与本地阅读数据。
+- `app/page.tsx`：ChatGPT 登录与双邮箱访问控制入口。
+- `app/paper-orbit-client.tsx`：站点交互、兴趣画像与本地阅读数据。
+- `app/access-control.ts`：服务端用户白名单与 API 授权。
 - `app/api/arxiv/route.ts`：arXiv 候选生成、Semantic Scholar 批量影响力数据与搜索接口。
 - `app/api/arxiv/recommendation.ts`：可解释多信号评分与多样性重排。
 - `app/api/ai/route.ts`：Paper Copilot 与阅读报告。

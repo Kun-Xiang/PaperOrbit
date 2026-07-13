@@ -1,3 +1,5 @@
+import { paperOrbitApiAccessError } from "../../access-control";
+
 type PaperInput = {
   id?: string;
   title?: string;
@@ -53,6 +55,9 @@ function extractOutputText(payload: unknown) {
 }
 
 export async function POST(request: Request) {
+  const accessError = await paperOrbitApiAccessError();
+  if (accessError) return accessError;
+
   try {
     const body = (await request.json()) as { paper?: PaperInput; prompt?: unknown; action?: unknown };
     const paper = body.paper ?? {};
