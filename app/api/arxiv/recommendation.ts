@@ -39,6 +39,58 @@ export type RecommendedPaper = CandidatePaper & {
   recommendation: RecommendationDetails;
 };
 
+export type FeedbackKind =
+  | "relevant"
+  | "not_relevant"
+  | "too_broad"
+  | "already_knew";
+
+export type PaperFeedback = {
+  paperId: string;
+  kind: FeedbackKind;
+  updatedAt: string;
+  projectId: string;
+};
+
+export type AffinitySignal = {
+  value: number;
+  updatedAt: string;
+};
+
+export type AffinityProfileV3 = {
+  version: 3;
+  signals: Record<string, AffinitySignal>;
+};
+
+export const AFFINITY_STORAGE_KEY = "paper-orbit:affinity-v3";
+export const LEGACY_AFFINITY_STORAGE_KEY = "paper-orbit:affinity-v2";
+export const FEEDBACK_STORAGE_KEY = "paper-orbit:paper-feedback-v1";
+export const DEFAULT_PROJECT_ID = "default";
+export const AFFINITY_HALF_LIFE_DAYS = 90;
+
+export const ORBIT_V2_WEIGHTS = {
+  relevance: 0.42,
+  affinity: 0.12,
+  freshness: 0.16,
+  influence: 0.17,
+  evidence: 0.13,
+} as const;
+
+export const ORBIT_DIVERSITY_WEIGHTS = {
+  similarity: 0.16,
+  repeatedCategory: 0.025,
+} as const;
+
+export const LOCAL_FEEDBACK_WEIGHTS: Record<FeedbackKind, {
+  exact: number;
+  related: number;
+}> = {
+  relevant: { exact: 0.12, related: 0.18 },
+  not_relevant: { exact: -0.62, related: -0.34 },
+  too_broad: { exact: -0.34, related: -0.18 },
+  already_knew: { exact: -0.42, related: 0 },
+};
+
 type InterestProfile = {
   categories: string[];
   keywords: string[];
@@ -153,6 +205,10 @@ const INTEREST_PROFILES: Record<string, InterestProfile> = {
   },
 };
 
+export const SUPPORTED_RESEARCH_DIRECTIONS = Object.freeze(
+  Object.keys(INTEREST_PROFILES),
+);
+
 const EVIDENCE_GROUPS = [
   ["extensive experiment", "comprehensive experiment", "ablation", "benchmark"],
   ["real-world", "real world", "closed-loop", "physical robot", "user study"],
@@ -233,6 +289,202 @@ export function buildFeedQuery(interests: string[]) {
     .map((term) => `all:${term}`)
     .join(" OR ");
   return `(${categoryQuery}) AND (${topicQuery})`;
+}
+
+export function buildGenericFeedQuery() {
+  const profiles = SUPPORTED_RESEARCH_DIRECTIONS.map(profileFor);
+  const categories = unique(
+    profiles.flatMap((profile) => profile.categories),
+  );
+  const queryTerms = unique(
+    profiles.flatMap((profile) => profile.queryTerms),
+  );
+  const categoryQuery = categories
+    .map((category) => `cat:${category}`)
+    .join(" OR ");
+  const topicQuery = queryTerms
+    .map((term) => `all:${term}`)
+    .join(" OR ");
+  return `(${categoryQuery}) AND (${topicQuery})`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function safeTimestamp(value: unknown, fallback: string) {
+  if (typeof value !== "string") return fallback;
+  return Number.isFinite(new Date(value).getTime()) ? value : fallback;
+}
+
+function emptyAffinityProfile(): AffinityProfileV3 {
+  return { version: 3, signals: {} };
+}
+
+function normalizeAffinityProfile(
+  value: unknown,
+  fallbackTimestamp: string,
+): AffinityProfileV3 | null {
+  if (!isRecord(value) || value.version !== 3 || !isRecord(value.signals)) {
+    return null;
+  }
+  const signals: Record<string, AffinitySignal> = {};
+  for (const [name, rawSignal] of Object.entries(value.signals)) {
+    if (!name.trim() || !isRecord(rawSignal)) continue;
+    const rawValue = rawSignal.value;
+    if (typeof rawValue !== "number" || !Number.isFinite(rawValue)) continue;
+    signals[name.slice(0, 100)] = {
+      value: Number(clamp(rawValue, -12, 12).toFixed(3)),
+      updatedAt: safeTimestamp(rawSignal.updatedAt, fallbackTimestamp),
+    };
+  }
+  return { version: 3, signals };
+}
+
+export function loadAffinityProfile(
+  v3Raw: string | null,
+  legacyV2Raw: string | null,
+  now = new Date(),
+) {
+  const timestamp = now.toISOString();
+  if (v3Raw !== null) {
+    try {
+      return {
+        profile:
+          normalizeAffinityProfile(JSON.parse(v3Raw), timestamp)
+          ?? emptyAffinityProfile(),
+        migrated: false,
+      };
+    } catch {
+      return { profile: emptyAffinityProfile(), migrated: false };
+    }
+  }
+
+  const signals: Record<string, AffinitySignal> = {};
+  try {
+    const legacy = legacyV2Raw ? JSON.parse(legacyV2Raw) : {};
+    if (isRecord(legacy)) {
+      for (const [name, rawValue] of Object.entries(legacy)) {
+        if (
+          !name.trim()
+          || typeof rawValue !== "number"
+          || !Number.isFinite(rawValue)
+        ) {
+          continue;
+        }
+        signals[name.slice(0, 100)] = {
+          value: Number(clamp(rawValue, -12, 12).toFixed(3)),
+          updatedAt: timestamp,
+        };
+      }
+    }
+  } catch {
+    // Corrupt legacy storage safely becomes a fresh local profile.
+  }
+  return { profile: { version: 3 as const, signals }, migrated: true };
+}
+
+export function decayedAffinityValue(
+  signal: AffinitySignal,
+  now = new Date(),
+) {
+  const updatedAt = new Date(signal.updatedAt).getTime();
+  if (!Number.isFinite(updatedAt)) return signal.value;
+  const ageDays = Math.max(0, (now.getTime() - updatedAt) / 86_400_000);
+  return signal.value * 2 ** (-ageDays / AFFINITY_HALF_LIFE_DAYS);
+}
+
+function affinitySignalsForPaper(paper: CandidatePaper) {
+  return unique([
+    paper.category,
+    ...paper.categories,
+    ...paper.tags,
+  ]).slice(0, 20);
+}
+
+export function adjustAffinityProfile(
+  profile: AffinityProfileV3,
+  paper: CandidatePaper,
+  delta: number,
+  now = new Date(),
+): AffinityProfileV3 {
+  const timestamp = now.toISOString();
+  const signals = { ...profile.signals };
+  for (const name of affinitySignalsForPaper(paper)) {
+    const current = signals[name]
+      ? decayedAffinityValue(signals[name], now)
+      : 0;
+    const value = clamp(current + delta, -12, 12);
+    if (Math.abs(value) <= 0.05) delete signals[name];
+    else {
+      signals[name] = {
+        value: Number(value.toFixed(3)),
+        updatedAt: timestamp,
+      };
+    }
+  }
+  return { version: 3, signals };
+}
+
+const FEEDBACK_KINDS = new Set<FeedbackKind>([
+  "relevant",
+  "not_relevant",
+  "too_broad",
+  "already_knew",
+]);
+
+export function parseFeedbackStorage(raw: string | null): PaperFeedback[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const latest = new Map<string, PaperFeedback>();
+    for (const item of parsed) {
+      if (!isRecord(item)) continue;
+      const paperId = typeof item.paperId === "string"
+        ? item.paperId.trim().slice(0, 100)
+        : "";
+      const kind = item.kind;
+      const projectId = typeof item.projectId === "string"
+        ? item.projectId.trim().slice(0, 80)
+        : DEFAULT_PROJECT_ID;
+      if (!paperId || typeof kind !== "string" || !FEEDBACK_KINDS.has(kind as FeedbackKind)) {
+        continue;
+      }
+      const feedback: PaperFeedback = {
+        paperId,
+        kind: kind as FeedbackKind,
+        projectId: projectId || DEFAULT_PROJECT_ID,
+        updatedAt: safeTimestamp(item.updatedAt, new Date(0).toISOString()),
+      };
+      const key = `${feedback.projectId}:${feedback.paperId}`;
+      const previous = latest.get(key);
+      if (!previous || previous.updatedAt <= feedback.updatedAt) {
+        latest.set(key, feedback);
+      }
+    }
+    return Array.from(latest.values()).sort(
+      (left, right) => right.updatedAt.localeCompare(left.updatedAt),
+    );
+  } catch {
+    return [];
+  }
+}
+
+export function upsertPaperFeedback(
+  feedback: PaperFeedback[],
+  paperId: string,
+  kind: FeedbackKind | null,
+  now = new Date(),
+  projectId = DEFAULT_PROJECT_ID,
+) {
+  const next = feedback.filter(
+    (item) => item.paperId !== paperId || item.projectId !== projectId,
+  );
+  if (kind) {
+    next.unshift({ paperId, kind, projectId, updatedAt: now.toISOString() });
+  }
+  return next;
 }
 
 function interestMatch(paper: CandidatePaper, interest: string) {
@@ -376,11 +628,11 @@ export function rankPapers(
     const influenceSignal = influenceById.get(paper.id);
     const influence = influenceScore(paper, evidence, influenceSignal);
     const composite =
-      relevance * 0.42
-      + affinity * 0.12
-      + freshness * 0.16
-      + influence * 0.17
-      + evidence * 0.13;
+      relevance * ORBIT_V2_WEIGHTS.relevance
+      + affinity * ORBIT_V2_WEIGHTS.affinity
+      + freshness * ORBIT_V2_WEIGHTS.freshness
+      + influence * ORBIT_V2_WEIGHTS.influence
+      + evidence * ORBIT_V2_WEIGHTS.evidence;
     const citationCount = influenceSignal?.citationCount ?? 0;
     const recommendation: RecommendationDetails = {
       reason: scoreReason(matchedInterests, affinity, freshness, evidence, citationCount),
@@ -407,7 +659,10 @@ export function rankPapers(
 
   ranked.sort((a, b) => b.composite - a.composite || a.id.localeCompare(b.id));
   if (options.diversify === false) {
-    return ranked.slice(0, limit).map(({ composite: _composite, ...paper }) => paper);
+    return ranked.slice(0, limit).map(({ composite, ...paper }) => {
+      void composite;
+      return paper;
+    });
   }
 
   const relevant = ranked.filter(
@@ -427,7 +682,10 @@ export function rankPapers(
         ? Math.max(...selected.map((chosen) => similarity(candidate, chosen)))
         : 0;
       const repeatedCategory = categoryCount.get(candidate.category) ?? 0;
-      const adjusted = candidate.composite - overlap * 0.16 - repeatedCategory * 0.025;
+      const adjusted =
+        candidate.composite
+        - overlap * ORBIT_DIVERSITY_WEIGHTS.similarity
+        - repeatedCategory * ORBIT_DIVERSITY_WEIGHTS.repeatedCategory;
       if (
         adjusted > bestAdjusted
         || (adjusted === bestAdjusted && candidate.id.localeCompare(remaining[bestIndex].id) < 0)
@@ -449,5 +707,222 @@ export function rankPapers(
     categoryCount.set(chosen.category, (categoryCount.get(chosen.category) ?? 0) + 1);
   }
 
-  return selected.map(({ composite: _composite, ...paper }) => paper);
+  return selected.map(({ composite, ...paper }) => {
+    void composite;
+    return paper;
+  });
+}
+
+export function canonicalPaperId(id: string) {
+  return id
+    .trim()
+    .replace(/^https?:\/\/(?:export\.)?arxiv\.org\/(?:abs|pdf)\//i, "")
+    .replace(/\.pdf$/i, "")
+    .replace(/v\d+$/i, "")
+    .toLowerCase();
+}
+
+export function dedupePapers<T extends CandidatePaper>(papers: T[]) {
+  const seen = new Set<string>();
+  const result: T[] = [];
+  for (const paper of papers) {
+    const id = canonicalPaperId(paper.id);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    result.push(paper);
+  }
+  return result;
+}
+
+function profileAffinityScore(
+  paper: CandidatePaper,
+  profile: AffinityProfileV3,
+  now: Date,
+) {
+  const haystack = normalize(
+    `${paper.title} ${paper.summary} ${paper.category} ${paper.categories.join(" ")} ${paper.tags.join(" ")}`,
+  );
+  let total = 0;
+  for (const [name, signal] of Object.entries(profile.signals)) {
+    if (includesTerm(haystack, name)) {
+      total += decayedAffinityValue(signal, now);
+    }
+  }
+  return Math.tanh(total / 8);
+}
+
+function feedbackAdjustment(
+  paper: CandidatePaper,
+  feedback: PaperFeedback[],
+  paperById: Map<string, CandidatePaper>,
+  projectId: string,
+) {
+  const paperId = canonicalPaperId(paper.id);
+  let exact = 0;
+  let related = 0;
+  let exactKind: FeedbackKind | null = null;
+  for (const item of feedback) {
+    if (item.projectId !== projectId) continue;
+    const feedbackId = canonicalPaperId(item.paperId);
+    const weights = LOCAL_FEEDBACK_WEIGHTS[item.kind];
+    if (feedbackId === paperId) {
+      exact += weights.exact;
+      exactKind = item.kind;
+      continue;
+    }
+    if (!weights.related) continue;
+    const source = paperById.get(feedbackId);
+    if (source) related += similarity(paper, source) * weights.related;
+  }
+  return {
+    exact,
+    related: clamp(related, -0.5, 0.32),
+    exactKind,
+  };
+}
+
+function localReason(
+  baselineReason: string,
+  profileAffinity: number,
+  feedback: ReturnType<typeof feedbackAdjustment>,
+) {
+  if (feedback.exactKind === "relevant") {
+    return `你标记为相关 · ${baselineReason}`;
+  }
+  if (feedback.exactKind === "not_relevant") {
+    return `已按“不相关”反馈降权 · ${baselineReason}`;
+  }
+  if (feedback.exactKind === "too_broad") {
+    return `已按“过于宽泛”反馈降权 · ${baselineReason}`;
+  }
+  if (feedback.exactKind === "already_knew") {
+    return `已读过 / 已知 · ${baselineReason}`;
+  }
+  if (feedback.related >= 0.04) return `与你标记相关的论文相似 · ${baselineReason}`;
+  if (profileAffinity >= 0.18) return `匹配本机阅读偏好 · ${baselineReason}`;
+  return baselineReason;
+}
+
+export function rankPapersLocally(
+  candidates: CandidatePaper[],
+  seedPapers: CandidatePaper[],
+  interests: string[],
+  profile: AffinityProfileV3,
+  feedback: PaperFeedback[],
+  influenceById: Map<string, InfluenceSignal>,
+  limit: number,
+  options: { now?: Date; projectId?: string } = {},
+): RecommendedPaper[] {
+  const now = options.now ?? new Date();
+  const projectId = options.projectId ?? DEFAULT_PROJECT_ID;
+  const pool = dedupePapers([...candidates, ...seedPapers]);
+  if (!pool.length || limit <= 0) return [];
+
+  const baseline = rankPapers(
+    pool,
+    interests,
+    [],
+    influenceById,
+    pool.length,
+    { diversify: false, now },
+  );
+  const baselineRank = new Map(
+    baseline.map((paper, index) => [canonicalPaperId(paper.id), index]),
+  );
+  const paperById = new Map(
+    pool.map((paper) => [canonicalPaperId(paper.id), paper]),
+  );
+
+  const ranked = baseline.map((paper) => {
+    const profileAffinity = profileAffinityScore(paper, profile, now);
+    const feedbackEffect = feedbackAdjustment(
+      paper,
+      feedback,
+      paperById,
+      projectId,
+    );
+    const baseComposite = clamp((paper.score - 50) / 48);
+    const localComposite =
+      baseComposite
+      + profileAffinity * 0.15
+      + feedbackEffect.exact
+      + feedbackEffect.related;
+    const affinitySignal = clamp(
+      0.5 + profileAffinity * 0.36 + feedbackEffect.related * 0.72,
+    );
+    return {
+      ...paper,
+      score: Math.round(clamp(50 + localComposite * 48, 0, 99)),
+      recommendation: {
+        ...paper.recommendation,
+        reason: localReason(
+          paper.recommendation.reason,
+          profileAffinity,
+          feedbackEffect,
+        ),
+        signals: {
+          ...paper.recommendation.signals,
+          affinity: Math.round(affinitySignal * 100),
+        },
+        exploration: false,
+      },
+      localComposite,
+    };
+  });
+
+  ranked.sort(
+    (left, right) =>
+      right.localComposite - left.localComposite
+      || canonicalPaperId(left.id).localeCompare(canonicalPaperId(right.id)),
+  );
+
+  const remaining = [...ranked];
+  const selected: typeof ranked = [];
+  const categoryCount = new Map<string, number>();
+  while (remaining.length && selected.length < Math.min(limit, pool.length)) {
+    let bestIndex = 0;
+    let bestAdjusted = Number.NEGATIVE_INFINITY;
+    remaining.forEach((candidate, index) => {
+      const overlap = selected.length
+        ? Math.max(...selected.map((chosen) => similarity(candidate, chosen)))
+        : 0;
+      const repeatedCategory = categoryCount.get(candidate.category) ?? 0;
+      const adjusted =
+        candidate.localComposite
+        - overlap * ORBIT_DIVERSITY_WEIGHTS.similarity
+        - repeatedCategory * ORBIT_DIVERSITY_WEIGHTS.repeatedCategory;
+      if (
+        adjusted > bestAdjusted
+        || (
+          adjusted === bestAdjusted
+          && canonicalPaperId(candidate.id).localeCompare(
+            canonicalPaperId(remaining[bestIndex].id),
+          ) < 0
+        )
+      ) {
+        bestAdjusted = adjusted;
+        bestIndex = index;
+      }
+    });
+    const [chosen] = remaining.splice(bestIndex, 1);
+    const exploration =
+      (baselineRank.get(canonicalPaperId(chosen.id)) ?? 0) >= limit;
+    if (exploration) {
+      chosen.recommendation = {
+        ...chosen.recommendation,
+        reason: `${chosen.recommendation.reason} · 多样性探索`,
+        exploration: true,
+      };
+    }
+    selected.push(chosen);
+    categoryCount.set(
+      chosen.category,
+      (categoryCount.get(chosen.category) ?? 0) + 1,
+    );
+  }
+
+  return selected.map(({ localComposite, ...paper }) => {
+    void localComposite;
+    return paper;
+  });
 }

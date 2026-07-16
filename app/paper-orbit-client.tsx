@@ -1,57 +1,105 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-
-declare global {
-  interface Window {
-    openai?: {
-      sendFollowUpMessage?: (args: {
-        prompt: string;
-        title?: string;
-      }) => Promise<void>;
-    };
-  }
-}
+import {
+  DEFAULT_PROJECT_ID,
+  adjustAffinityProfile,
+  canonicalPaperId,
+  loadAffinityProfile,
+  parseFeedbackStorage,
+  rankPapersLocally,
+  upsertPaperFeedback,
+  type AffinityProfileV3,
+  type CandidatePaper,
+  type FeedbackKind,
+  type InfluenceSignal,
+  type PaperFeedback,
+  type RecommendationDetails,
+} from "./api/arxiv/recommendation";
+import type {
+  ArxivSearchField,
+  ArxivSearchMatch,
+  ArxivSearchOrder,
+  ArxivSearchSort,
+} from "./api/arxiv/search-query";
+import {
+  claimLegacyStorage,
+  storageKeysFor,
+} from "./local-user-storage";
 
 type View = "today" | "discover" | "library" | "reports";
+type AiMode = "openai" | "preview";
+type AiConnectionSource = "session" | "shared" | null;
 
-type Paper = {
-  id: string;
-  title: string;
-  authors: string[];
-  summary: string;
-  zhSummary?: string;
-  published: string;
-  category: string;
-  categories?: string[];
-  score: number;
-  minutes: number;
-  url: string;
-  pdfUrl: string;
-  tags: string[];
-  recommendation?: {
-    reason: string;
-    matchedInterests: string[];
-    signals: {
-      relevance: number;
-      affinity: number;
-      freshness: number;
-      influence: number;
-      evidence: number;
-    };
-    citationCount?: number;
-    influentialCitationCount?: number;
-    exploration?: boolean;
+type AiConnection = {
+  connected: boolean;
+  source: AiConnectionSource;
+  model: string | null;
+  sessionAvailable: boolean;
+};
+
+type ResearchConnection = {
+  arxiv: {
+    keyRequired: false;
+    source: "public";
+  };
+  semanticScholar: {
+    keyConnected: boolean;
+    source: "session" | "shared" | "public";
+    sessionAvailable: boolean;
   };
 };
 
-type AffinityProfile = Record<string, number>;
+type AiUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+};
+
+type AiRunMeta = {
+  source: "fulltext-pdf" | "abstract-preview";
+  model: string | null;
+  pdfDetail?: "low" | "high";
+  usage?: AiUsage | null;
+};
+
+type Paper = CandidatePaper & {
+  zhSummary?: string;
+  score: number;
+  recommendation?: RecommendationDetails;
+};
+
+type SearchFilters = {
+  field: ArxivSearchField;
+  match: ArxivSearchMatch;
+  exclude: string;
+  category: string;
+  fromYear: string;
+  toYear: string;
+  sort: ArxivSearchSort;
+  order: ArxivSearchOrder;
+  limit: number;
+};
+
+type SearchMeta = {
+  totalResults: number;
+  start: number;
+  limit: number;
+  hasPrevious: boolean;
+  hasNext: boolean;
+};
+
+type ToastNotice = {
+  message: string;
+  actionLabel?: string;
+  onAction?: () => void;
+};
 
 export type PaperOrbitViewer = {
   displayName: string;
   email: string;
   initials: string;
-  role: "owner" | "manager";
+  role: "owner" | "manager" | "reader";
 };
 
 type ChatMessage = {
@@ -65,7 +113,7 @@ type ReadingReport = {
   paperTitle: string;
   content: string;
   createdAt: string;
-  mode: "openai" | "preview";
+  mode: AiMode;
 };
 
 const DEFAULT_INTERESTS = [
@@ -75,6 +123,48 @@ const DEFAULT_INTERESTS = [
 ];
 
 const DAILY_PAPER_COUNT = 10;
+
+const VIEWER_ROLE_LABELS: Record<PaperOrbitViewer["role"], string> = {
+  owner: "OWNER",
+  manager: "MANAGER",
+  reader: "READER",
+};
+
+const DEFAULT_RESEARCH_CONNECTION: ResearchConnection = {
+  arxiv: {
+    keyRequired: false,
+    source: "public",
+  },
+  semanticScholar: {
+    keyConnected: false,
+    source: "public",
+    sessionAvailable: false,
+  },
+};
+
+const DEFAULT_SEARCH_FILTERS: SearchFilters = {
+  field: "all",
+  match: "all",
+  exclude: "",
+  category: "",
+  fromYear: "",
+  toYear: "",
+  sort: "relevance",
+  order: "descending",
+  limit: 20,
+};
+
+const FEEDBACK_LABELS: Record<FeedbackKind, string> = {
+  relevant: "相关",
+  not_relevant: "不相关",
+  too_broad: "过于宽泛",
+  already_knew: "已读过 / 已知",
+};
+
+const COPILOT_WELCOME: ChatMessage = {
+  role: "assistant",
+  text: "连接 OpenAI 后，我会直接阅读所选论文的 arXiv PDF 全文。你可以问核心机制、公式、图表、实验或复现风险。",
+};
 
 const INTEREST_OPTIONS = [
   "Physical AI",
@@ -260,18 +350,12 @@ const SEED_PAPERS: Paper[] = [
   },
 ];
 
-const STORAGE = {
-  saved: "paper-orbit:saved",
-  read: "paper-orbit:read",
-  reports: "paper-orbit:reports",
-  interests: "paper-orbit:interests",
-  affinity: "paper-orbit:affinity-v2",
-  refresh: "paper-orbit:last-refresh-v2",
-};
-
 function uniquePapers(...groups: Paper[][]) {
   const map = new Map<string, Paper>();
-  groups.flat().forEach((paper) => map.set(paper.id, paper));
+  groups.flat().forEach((paper) => {
+    const id = canonicalPaperId(paper.id);
+    if (!map.has(id)) map.set(id, paper);
+  });
   return Array.from(map.values());
 }
 
@@ -298,97 +382,192 @@ export default function PaperOrbitClient({
 }: {
   viewer: PaperOrbitViewer;
 }) {
+  const storage = useMemo(() => storageKeysFor(viewer.email), [viewer.email]);
   const [activeView, setActiveView] = useState<View>("today");
-  const [feed, setFeed] = useState<Paper[]>(SEED_PAPERS);
+  const [candidatePool, setCandidatePool] = useState<Paper[]>(SEED_PAPERS);
   const [searchResults, setSearchResults] = useState<Paper[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchFilters, setSearchFilters] = useState<SearchFilters>(
+    DEFAULT_SEARCH_FILTERS,
+  );
+  const [searchMeta, setSearchMeta] = useState<SearchMeta | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchMessage, setSearchMessage] = useState("搜索标题、作者、主题或 arXiv ID");
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [readIds, setReadIds] = useState<Set<string>>(new Set());
   const [reports, setReports] = useState<ReadingReport[]>([]);
   const [interests, setInterests] = useState(DEFAULT_INTERESTS);
-  const [affinity, setAffinity] = useState<AffinityProfile>({});
+  const [affinity, setAffinity] = useState<AffinityProfileV3>({
+    version: 3,
+    signals: {},
+  });
+  const [paperFeedback, setPaperFeedback] = useState<PaperFeedback[]>([]);
+  const [rankingNow, setRankingNow] = useState(() => Date.now());
   const [draftInterests, setDraftInterests] = useState(DEFAULT_INTERESTS);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
   const [ready, setReady] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshNote, setRefreshNote] = useState("多信号选刊 · 每日更新");
   const [copilotPaperId, setCopilotPaperId] = useState(SEED_PAPERS[0].id);
   const [aiInput, setAiInput] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
-  const [aiMode, setAiMode] = useState<"openai" | "preview">("preview");
-  const [chat, setChat] = useState<ChatMessage[]>([
-    {
-      role: "assistant",
-      text: "选一篇论文，然后问我它的核心贡献、方法差异、关键公式或复现风险。",
-    },
-  ]);
+  const [aiMode, setAiMode] = useState<AiMode>("preview");
+  const [aiConnection, setAiConnection] = useState<AiConnection>({
+    connected: false,
+    source: null,
+    model: null,
+    sessionAvailable: false,
+  });
+  const [aiConnectionReady, setAiConnectionReady] = useState(false);
+  const [aiConnectionBusy, setAiConnectionBusy] = useState(false);
+  const [apiKeyInput, setApiKeyInput] = useState("");
+  const [aiConnectionMessage, setAiConnectionMessage] = useState("");
+  const [researchConnection, setResearchConnection] = useState<ResearchConnection>(
+    DEFAULT_RESEARCH_CONNECTION,
+  );
+  const [researchConnectionReady, setResearchConnectionReady] = useState(false);
+  const [researchConnectionBusy, setResearchConnectionBusy] = useState(false);
+  const [semanticScholarKeyInput, setSemanticScholarKeyInput] = useState("");
+  const [researchConnectionMessage, setResearchConnectionMessage] = useState("");
+  const [lastAiRun, setLastAiRun] = useState<AiRunMeta | null>(null);
+  const [chat, setChat] = useState<ChatMessage[]>([COPILOT_WELCOME]);
   const [activeReport, setActiveReport] = useState<ReadingReport | null>(null);
-  const [toast, setToast] = useState("");
+  const [toast, setToast] = useState<ToastNotice | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
+  const influenceById = useMemo(() => {
+    const influence = new Map<string, InfluenceSignal>();
+    for (const paper of candidatePool) {
+      const citationCount = paper.recommendation?.citationCount;
+      const influentialCitationCount =
+        paper.recommendation?.influentialCitationCount;
+      if (
+        typeof citationCount === "number"
+        || typeof influentialCitationCount === "number"
+      ) {
+        influence.set(paper.id, {
+          citationCount: citationCount ?? 0,
+          influentialCitationCount: influentialCitationCount ?? 0,
+        });
+      }
+    }
+    return influence;
+  }, [candidatePool]);
+
+  const feed = useMemo(
+    () => rankPapersLocally(
+      candidatePool,
+      SEED_PAPERS,
+      interests,
+      affinity,
+      paperFeedback,
+      influenceById,
+      DAILY_PAPER_COUNT,
+      { now: new Date(rankingNow), projectId: DEFAULT_PROJECT_ID },
+    ) as Paper[],
+    [affinity, candidatePool, influenceById, interests, paperFeedback, rankingNow],
+  );
+
   const allPapers = useMemo(
-    () => uniquePapers(feed, searchResults, SEED_PAPERS),
-    [feed, searchResults],
+    () => uniquePapers(feed, candidatePool, searchResults, SEED_PAPERS),
+    [candidatePool, feed, searchResults],
   );
   const copilotPaper =
-    allPapers.find((paper) => paper.id === copilotPaperId) ?? feed[0];
+    allPapers.find(
+      (paper) => canonicalPaperId(paper.id) === canonicalPaperId(copilotPaperId),
+    ) ?? feed[0];
   const libraryPapers = allPapers.filter((paper) => savedIds.has(paper.id));
 
   useEffect(() => {
-    setSavedIds(new Set(safeParse<string[]>(localStorage.getItem(STORAGE.saved), [])));
-    setReadIds(new Set(safeParse<string[]>(localStorage.getItem(STORAGE.read), [])));
-    setReports(
-      safeParse<ReadingReport[]>(localStorage.getItem(STORAGE.reports), []),
+    claimLegacyStorage(
+      localStorage,
+      storage,
+      viewer.email,
+      viewer.role !== "reader",
     );
+    setSavedIds(new Set(safeParse<string[]>(localStorage.getItem(storage.saved), [])));
+    setReadIds(new Set(safeParse<string[]>(localStorage.getItem(storage.read), [])));
+    setReports(
+      safeParse<ReadingReport[]>(localStorage.getItem(storage.reports), []),
+    );
+    const storedCandidates = safeParse<Paper[]>(
+      localStorage.getItem(storage.candidates),
+      [],
+    );
+    if (storedCandidates.length) setCandidatePool(uniquePapers(storedCandidates));
     const storedInterests = safeParse<string[]>(
-      localStorage.getItem(STORAGE.interests),
+      localStorage.getItem(storage.interests),
       DEFAULT_INTERESTS,
     );
-    const storedAffinity = safeParse<AffinityProfile>(
-      localStorage.getItem(STORAGE.affinity),
-      {},
+    const storedAffinity = loadAffinityProfile(
+      localStorage.getItem(storage.affinity),
+      localStorage.getItem(storage.legacyAffinity),
+      new Date(),
     );
     setInterests(storedInterests);
-    setAffinity(storedAffinity);
+    setAffinity(storedAffinity.profile);
+    setPaperFeedback(
+      parseFeedbackStorage(localStorage.getItem(storage.feedback)),
+    );
+    if (storedAffinity.migrated) {
+      localStorage.setItem(
+        storage.affinity,
+        JSON.stringify(storedAffinity.profile),
+      );
+    }
     setDraftInterests(storedInterests);
+    setRankingNow(Date.now());
     setReady(true);
 
     const today = new Date().toISOString().slice(0, 10);
-    if (localStorage.getItem(STORAGE.refresh) !== today) {
-      void refreshDaily(storedInterests, true, storedAffinity);
+    if (
+      !storedCandidates.length
+      || localStorage.getItem(storage.refresh) !== today
+    ) {
+      void refreshDaily(true);
     }
+    void loadAiConnection();
+    void loadResearchConnection();
+    // Bootstrap from browser storage exactly once; refreshDaily reads no personal state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     if (!ready) return;
-    localStorage.setItem(STORAGE.saved, JSON.stringify(Array.from(savedIds)));
-  }, [ready, savedIds]);
+    localStorage.setItem(storage.saved, JSON.stringify(Array.from(savedIds)));
+  }, [ready, savedIds, storage.saved]);
 
   useEffect(() => {
     if (!ready) return;
-    localStorage.setItem(STORAGE.read, JSON.stringify(Array.from(readIds)));
-  }, [ready, readIds]);
+    localStorage.setItem(storage.read, JSON.stringify(Array.from(readIds)));
+  }, [ready, readIds, storage.read]);
 
   useEffect(() => {
     if (!ready) return;
-    localStorage.setItem(STORAGE.reports, JSON.stringify(reports));
-  }, [ready, reports]);
+    localStorage.setItem(storage.reports, JSON.stringify(reports));
+  }, [ready, reports, storage.reports]);
 
   useEffect(() => {
     if (!ready) return;
-    localStorage.setItem(STORAGE.affinity, JSON.stringify(affinity));
-  }, [ready, affinity]);
+    localStorage.setItem(storage.affinity, JSON.stringify(affinity));
+  }, [affinity, ready, storage.affinity]);
+
+  useEffect(() => {
+    if (!ready) return;
+    localStorage.setItem(storage.feedback, JSON.stringify(paperFeedback));
+  }, [paperFeedback, ready, storage.feedback]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
+        setActiveView("discover");
         searchRef.current?.focus();
       }
       if (event.key === "Escape") {
         setSettingsOpen(false);
+        setAiSettingsOpen(false);
         setActiveReport(null);
       }
     };
@@ -398,50 +577,62 @@ export default function PaperOrbitClient({
 
   useEffect(() => {
     if (!toast) return;
-    const timer = window.setTimeout(() => setToast(""), 2400);
+    const timer = window.setTimeout(
+      () => setToast(null),
+      toast.onAction ? 5_000 : 2_400,
+    );
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  async function refreshDaily(
-    nextInterests = interests,
-    silent = false,
-    nextAffinity = affinity,
+  function showToast(
+    message: string,
+    actionLabel?: string,
+    onAction?: () => void,
   ) {
+    setToast({ message, actionLabel, onAction });
+  }
+
+  async function refreshDaily(silent = false) {
     setRefreshing(true);
     if (!silent) setRefreshNote("正在扫描候选池并重新排序…");
     try {
-      const affinityTerms = Object.entries(nextAffinity)
-        .sort(([, left], [, right]) => right - left)
-        .slice(0, 10)
-        .map(([term]) => term);
-      const params = new URLSearchParams({
-        mode: "feed",
-        interests: nextInterests.join(","),
+      const response = await fetch("/api/arxiv?mode=feed", {
+        cache: "no-store",
       });
-      if (affinityTerms.length) params.set("profile", affinityTerms.join("|"));
-      const response = await fetch(`/api/arxiv?${params.toString()}`);
       if (!response.ok) throw new Error("feed unavailable");
       const data = (await response.json()) as {
         papers?: Paper[];
         source?: string;
-        meta?: { candidateCount?: number; rankingVersion?: string };
+        meta?: {
+          candidateCount?: number;
+          metadataCredential?: "session" | "shared" | "public";
+          rankingVersion?: string;
+        };
       };
-      if (data.papers && data.papers.length >= 3) {
-        const nextFeed = uniquePapers(data.papers, SEED_PAPERS).slice(
-          0,
-          DAILY_PAPER_COUNT,
-        );
-        setFeed(nextFeed);
+      if (data.papers?.length) {
+        const nextCandidates = uniquePapers(data.papers);
+        setCandidatePool(nextCandidates);
         localStorage.setItem(
-          STORAGE.refresh,
+          storage.candidates,
+          JSON.stringify(nextCandidates),
+        );
+        setRankingNow(Date.now());
+        localStorage.setItem(
+          storage.refresh,
           new Date().toISOString().slice(0, 10),
         );
         const candidateCount = data.meta?.candidateCount ?? data.papers.length;
-        const sourceLabel = data.source?.includes("semantic-scholar")
-          ? "影响力信号已校准"
-          : "arXiv 多信号排序";
-        setRefreshNote(`从 ${candidateCount} 篇候选中精选 · ${sourceLabel}`);
-        if (!silent) setToast("今日 10 篇选刊已重新排序");
+        const sourceLabel = data.meta?.metadataCredential === "session"
+          ? "个人影响力数据已校准"
+          : data.meta?.metadataCredential === "shared"
+            ? "站点影响力数据已校准"
+            : data.source?.includes("semantic-scholar")
+              ? "公开影响力信号已校准"
+              : "arXiv 公开候选池";
+        setRefreshNote(
+          `从 ${candidateCount} 篇候选中在本机精选 · ${sourceLabel}`,
+        );
+        if (!silent) showToast("今日 10 篇已在本机重新排序");
       }
     } catch {
       setRefreshNote("编辑部缓存 · 网络恢复后自动更新");
@@ -451,52 +642,143 @@ export default function PaperOrbitClient({
   }
 
   function learnFromPaper(paper: Paper, weight: number) {
-    const signals = Array.from(
-      new Set([paper.category, ...(paper.categories ?? []), ...paper.tags]),
-    ).filter(Boolean);
-    setAffinity((current) => {
-      const next = { ...current };
-      for (const signal of signals) {
-        const value = Math.max(0, Math.min(12, (next[signal] ?? 0) + weight));
-        if (value <= 0.05) delete next[signal];
-        else next[signal] = Number(value.toFixed(2));
-      }
-      return next;
-    });
+    const now = new Date();
+    setAffinity((current) => adjustAffinityProfile(current, paper, weight, now));
+    setRankingNow(now.getTime());
   }
 
-  async function submitSearch(event?: FormEvent, queryOverride?: string) {
+  function updateSearchQuery(value: string) {
+    setSearchQuery(value);
+    setSearchMeta(null);
+  }
+
+  function updateSearchFilter<K extends keyof SearchFilters>(
+    name: K,
+    value: SearchFilters[K],
+  ) {
+    setSearchFilters((current) => ({ ...current, [name]: value }));
+    setSearchMeta(null);
+  }
+
+  async function submitSearch(
+    event?: FormEvent,
+    queryOverride?: string,
+    startOverride = 0,
+  ) {
     event?.preventDefault();
     const query = (queryOverride ?? searchQuery).trim();
     if (!query) {
       searchRef.current?.focus();
       return;
     }
+    if (queryOverride !== undefined) setSearchQuery(query);
     setActiveView("discover");
     setSearchLoading(true);
     setSearchMessage(`正在 arXiv 中检索“${query}”…`);
     try {
-      const response = await fetch(`/api/arxiv?q=${encodeURIComponent(query)}`);
+      const params = new URLSearchParams({
+        q: query,
+        field: searchFilters.field,
+        match: searchFilters.match,
+        sort: searchFilters.sort,
+        order: searchFilters.order,
+        start: String(Math.max(0, startOverride)),
+        limit: String(searchFilters.limit),
+      });
+      if (searchFilters.exclude.trim()) {
+        params.set("exclude", searchFilters.exclude.trim());
+      }
+      if (searchFilters.category) params.set("category", searchFilters.category);
+      if (searchFilters.fromYear) params.set("fromYear", searchFilters.fromYear);
+      if (searchFilters.toYear) params.set("toYear", searchFilters.toYear);
+      const response = await fetch(`/api/arxiv?${params.toString()}`, {
+        cache: "no-store",
+      });
       if (!response.ok) throw new Error("search unavailable");
-      const data = (await response.json()) as { papers?: Paper[] };
+      const data = (await response.json()) as {
+        papers?: Paper[];
+        meta?: SearchMeta;
+      };
       const papers = data.papers ?? [];
       setSearchResults(papers);
+      setSearchMeta(data.meta ?? null);
+      const total = data.meta?.totalResults ?? papers.length;
+      const first = papers.length ? (data.meta?.start ?? 0) + 1 : 0;
+      const last = (data.meta?.start ?? 0) + papers.length;
       setSearchMessage(
-        papers.length ? `找到 ${papers.length} 篇最新结果` : "没有找到结果，试试更宽的关键词",
+        papers.length
+          ? `显示第 ${first}–${last} 篇，共 ${total} 篇结果`
+          : "没有找到结果，试试更宽的关键词或清除筛选",
       );
     } catch {
-      const local = SEED_PAPERS.filter((paper) =>
+      const local = startOverride === 0 ? SEED_PAPERS.filter((paper) =>
         `${paper.title} ${paper.summary} ${paper.tags.join(" ")}`
           .toLowerCase()
           .includes(query.toLowerCase()),
-      );
+      ) : [];
       setSearchResults(local);
+      setSearchMeta(null);
       setSearchMessage(
         local.length ? "实时搜索暂不可用，先显示编辑部缓存" : "实时搜索暂不可用，请稍后重试",
       );
     } finally {
       setSearchLoading(false);
     }
+  }
+
+  function clearSearch() {
+    setSearchQuery("");
+    setSearchFilters(DEFAULT_SEARCH_FILTERS);
+    setSearchResults([]);
+    setSearchMeta(null);
+    setSearchMessage("搜索标题、作者、主题或 arXiv ID");
+    searchRef.current?.focus();
+  }
+
+  function updatePaperFeedback(paper: Paper, kind: FeedbackKind) {
+    const previous = paperFeedback.find(
+      (item) =>
+        item.projectId === DEFAULT_PROJECT_ID
+        && canonicalPaperId(item.paperId) === canonicalPaperId(paper.id),
+    );
+    const nextKind = previous?.kind === kind ? null : kind;
+    const now = new Date();
+    setPaperFeedback((current) =>
+      upsertPaperFeedback(current, paper.id, nextKind, now),
+    );
+    setRankingNow(now.getTime());
+    showToast(
+      nextKind ? "反馈已保存，推荐顺序已更新" : "已清除这篇论文的反馈",
+      "撤销",
+      () => {
+        const undoNow = new Date();
+        setPaperFeedback((current) =>
+          upsertPaperFeedback(
+            current,
+            paper.id,
+            previous?.kind ?? null,
+            undoNow,
+          ),
+        );
+        setRankingNow(undoNow.getTime());
+        setToast(null);
+      },
+    );
+  }
+
+  function clearStoredFeedback(item: PaperFeedback) {
+    const now = new Date();
+    setPaperFeedback((current) =>
+      upsertPaperFeedback(
+        current,
+        item.paperId,
+        null,
+        now,
+        item.projectId,
+      ),
+    );
+    setRankingNow(now.getTime());
+    showToast("这条论文反馈已清除");
   }
 
   function toggleSaved(id: string) {
@@ -506,10 +788,10 @@ export default function PaperOrbitClient({
       const next = new Set(current);
       if (next.has(id)) {
         next.delete(id);
-        setToast("已从书库移除");
+        showToast("已从书库移除");
       } else {
         next.add(id);
-        setToast("已保存到书库");
+        showToast("已保存到书库");
       }
       return next;
     });
@@ -522,34 +804,227 @@ export default function PaperOrbitClient({
     window.open(paper.url, "_blank", "noopener,noreferrer");
   }
 
+  async function loadAiConnection() {
+    try {
+      const response = await fetch("/api/ai/session", {
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      const data = (await response.json()) as AiConnection & { error?: string };
+      if (!response.ok) throw new Error(data.error || "无法读取 AI 连接状态");
+      setAiConnection(data);
+      setAiMode(data.connected ? "openai" : "preview");
+    } catch {
+      setAiConnectionMessage("暂时无法读取 AI 连接状态。");
+    } finally {
+      setAiConnectionReady(true);
+    }
+  }
+
+  async function connectOpenAI(event: FormEvent) {
+    event.preventDefault();
+    const apiKey = apiKeyInput.trim();
+    if (!apiKey || aiConnectionBusy) return;
+    setAiConnectionBusy(true);
+    setAiConnectionMessage("正在验证并建立加密会话…");
+    try {
+      const response = await fetch("/api/ai/session", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey }),
+      });
+      const data = (await response.json()) as AiConnection & { error?: string };
+      if (!response.ok) throw new Error(data.error || "连接 OpenAI 失败");
+      setAiConnection(data);
+      setAiMode("openai");
+      setAiConnectionMessage("已连接。之后的提问会读取 arXiv PDF 全文并计入你的 OpenAI API 用量。");
+      showToast("OpenAI 全文 Copilot 已连接");
+    } catch (error) {
+      setAiConnectionMessage(
+        error instanceof Error ? error.message : "连接 OpenAI 失败，请稍后重试。",
+      );
+    } finally {
+      setApiKeyInput("");
+      setAiConnectionBusy(false);
+    }
+  }
+
+  async function disconnectOpenAI() {
+    if (aiConnectionBusy) return;
+    setAiConnectionBusy(true);
+    try {
+      const response = await fetch("/api/ai/session", {
+        method: "DELETE",
+        credentials: "same-origin",
+      });
+      const data = (await response.json()) as AiConnection & { error?: string };
+      if (!response.ok) throw new Error(data.error || "断开连接失败");
+      setAiConnection(data);
+      setAiMode(data.connected ? "openai" : "preview");
+      setLastAiRun(null);
+      setAiConnectionMessage(
+        data.connected ? "个人会话已清除；当前仍使用站点配置的共享 OpenAI 连接。" : "个人 OpenAI 会话已从此浏览器清除。",
+      );
+      showToast("个人 OpenAI 会话已断开");
+    } catch (error) {
+      setAiConnectionMessage(
+        error instanceof Error ? error.message : "断开连接失败，请稍后重试。",
+      );
+    } finally {
+      setAiConnectionBusy(false);
+    }
+  }
+
+  async function loadResearchConnection() {
+    try {
+      const response = await fetch("/api/arxiv/session", {
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      const data = (await response.json()) as ResearchConnection & {
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(data.error || "无法读取论文数据连接状态");
+      }
+      setResearchConnection(data);
+    } catch {
+      setResearchConnectionMessage("暂时无法读取论文数据连接状态。");
+    } finally {
+      setResearchConnectionReady(true);
+    }
+  }
+
+  async function connectSemanticScholar(event: FormEvent) {
+    event.preventDefault();
+    const apiKey = semanticScholarKeyInput.trim();
+    if (!apiKey || researchConnectionBusy) return;
+    setResearchConnectionBusy(true);
+    setResearchConnectionMessage("正在验证并建立加密论文数据会话…");
+    try {
+      const response = await fetch("/api/arxiv/session", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey }),
+      });
+      const data = (await response.json()) as ResearchConnection & {
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(data.error || "连接 Semantic Scholar 失败");
+      }
+      setResearchConnection(data);
+      setResearchConnectionMessage(
+        "已连接。刷新选刊时会使用你的 Semantic Scholar API 配额读取引用影响力信号。",
+      );
+      showToast("个人论文影响力数据已连接");
+      await refreshDaily(true);
+    } catch (error) {
+      setResearchConnectionMessage(
+        error instanceof Error
+          ? error.message
+          : "连接 Semantic Scholar 失败，请稍后重试。",
+      );
+    } finally {
+      setSemanticScholarKeyInput("");
+      setResearchConnectionBusy(false);
+    }
+  }
+
+  async function disconnectSemanticScholar() {
+    if (researchConnectionBusy) return;
+    setResearchConnectionBusy(true);
+    try {
+      const response = await fetch("/api/arxiv/session", {
+        method: "DELETE",
+        credentials: "same-origin",
+      });
+      const data = (await response.json()) as ResearchConnection & {
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(data.error || "断开论文数据连接失败");
+      }
+      setResearchConnection(data);
+      setResearchConnectionMessage(
+        data.semanticScholar.source === "shared"
+          ? "个人会话已清除；当前仅 OWNER/MANAGER 使用站点共享的论文元数据连接。"
+          : "个人 Semantic Scholar 会话已从此浏览器清除；arXiv 公开检索仍可继续使用。",
+      );
+      showToast("个人论文数据会话已断开");
+      await refreshDaily(true);
+    } catch (error) {
+      setResearchConnectionMessage(
+        error instanceof Error
+          ? error.message
+          : "断开论文数据连接失败，请稍后重试。",
+      );
+    } finally {
+      setResearchConnectionBusy(false);
+    }
+  }
+
+  function selectCopilotPaper(id: string) {
+    setCopilotPaperId(id);
+    setChat([COPILOT_WELCOME]);
+    setLastAiRun(null);
+  }
+
   async function askAI(question?: string) {
     const prompt = (question ?? aiInput).trim();
     if (!prompt || !copilotPaper || aiBusy) return;
+    const history = chat.slice(-8);
     setAiInput("");
     setChat((current) => [...current, { role: "user", text: prompt }]);
     setAiBusy(true);
     try {
       const response = await fetch("/api/ai", {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paper: copilotPaper, prompt, action: "chat" }),
+        body: JSON.stringify({
+          paper: copilotPaper,
+          prompt,
+          action: "chat",
+          history,
+        }),
       });
-      if (!response.ok) throw new Error("ai unavailable");
       const data = (await response.json()) as {
-        answer: string;
-        mode: "openai" | "preview";
+        answer?: string;
+        error?: string;
+        mode?: AiMode;
+        source?: AiRunMeta["source"];
+        model?: string | null;
+        pdfDetail?: AiRunMeta["pdfDetail"];
+        usage?: AiUsage | null;
       };
-      setAiMode(data.mode);
+      if (!response.ok || !data.answer || !data.mode) {
+        throw new Error(data.error || "这次全文分析没有完成。");
+      }
+      const answer = data.answer;
+      const mode = data.mode;
+      setAiMode(mode);
+      setLastAiRun({
+        source: data.source ?? (mode === "openai" ? "fulltext-pdf" : "abstract-preview"),
+        model: data.model ?? aiConnection.model,
+        pdfDetail: data.pdfDetail,
+        usage: data.usage,
+      });
       setChat((current) => [
         ...current,
-        { role: "assistant", text: data.answer },
+        { role: "assistant", text: answer },
       ]);
-    } catch {
+    } catch (error) {
       setChat((current) => [
         ...current,
         {
           role: "assistant",
-          text: "这次分析没有完成。你可以稍后重试，或点击“交给 Codex 深挖”继续讨论。",
+          text:
+            error instanceof Error
+              ? error.message
+              : "这次全文分析没有完成，请稍后重试。",
         },
       ]);
     } finally {
@@ -560,24 +1035,40 @@ export default function PaperOrbitClient({
   async function generateReport(paper: Paper) {
     if (aiBusy) return;
     setCopilotPaperId(paper.id);
+    setChat([COPILOT_WELCOME]);
+    setLastAiRun(null);
     setAiBusy(true);
-    setToast("正在生成阅读报告…");
+    showToast("正在生成阅读报告…");
     try {
       const response = await fetch("/api/ai", {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           paper,
           action: "report",
-          prompt:
-            "请用自然、连贯的简体中文生成结构化阅读报告：研究问题、核心方法、关键贡献、证据强弱、局限、与我兴趣的关系、三个追问。请综合归纳，不要逐句翻译、复述或大段复制摘要；仅保留必要的模型名、数据集名、公式和公认英文缩写，并明确区分摘要事实、合理推断与需要正文核验的内容。",
+          prompt: `请阅读 PDF 全文，用自然、连贯的简体中文生成结构化报告：研究问题、核心方法、关键贡献、证据强弱、局限、与我兴趣的关系、三个追问。我的研究兴趣是 ${interests.join("、")}。请综合正文、公式、图表、实验与附录，尽可能给出可核验位置；不要逐句翻译、复述或大段复制论文，并明确区分正文事实、合理推断与论文未提供的证据。`,
         }),
       });
-      if (!response.ok) throw new Error("report unavailable");
       const data = (await response.json()) as {
-        answer: string;
-        mode: "openai" | "preview";
+        answer?: string;
+        error?: string;
+        mode?: AiMode;
+        source?: AiRunMeta["source"];
+        model?: string | null;
+        pdfDetail?: AiRunMeta["pdfDetail"];
+        usage?: AiUsage | null;
       };
+      if (!response.ok || !data.answer || !data.mode) {
+        throw new Error(data.error || "报告暂未生成。");
+      }
+      setAiMode(data.mode);
+      setLastAiRun({
+        source: data.source ?? (data.mode === "openai" ? "fulltext-pdf" : "abstract-preview"),
+        model: data.model ?? aiConnection.model,
+        pdfDetail: data.pdfDetail,
+        usage: data.usage,
+      });
       const report: ReadingReport = {
         id: `${paper.id}-${Date.now()}`,
         paperId: paper.id,
@@ -590,34 +1081,29 @@ export default function PaperOrbitClient({
       setActiveReport(report);
       learnFromPaper(paper, 2);
       setReadIds((current) => new Set(current).add(paper.id));
-      setToast("阅读报告已生成并保存");
-    } catch {
-      setToast("报告暂未生成，请稍后重试");
+      showToast("阅读报告已生成并保存");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "报告暂未生成，请稍后重试");
     } finally {
       setAiBusy(false);
     }
   }
 
-  async function sendToCodex() {
+  async function deepReadWithCopilot() {
     if (!copilotPaper) return;
-    const prompt = `请深度分析论文《${copilotPaper.title}》（arXiv:${copilotPaper.id}）。我的研究兴趣是 ${interests.join("、")}。请重点解释它的核心机制、关键证据、与相关工作的差异，以及最值得复现的实验。`;
-    if (window.openai?.sendFollowUpMessage) {
-      await window.openai.sendFollowUpMessage({
-        prompt,
-        title: "让 Codex 深挖这篇论文",
-      });
-      return;
-    }
-    await askAI("请做一次更深入的机制分析，并给出可验证的复现清单。");
+    await askAI(
+      `请基于 PDF 全文深度分析这篇论文。我的研究兴趣是 ${interests.join("、")}。请重点解释核心机制、关键公式与图表、证据是否支撑结论、与相关工作的差异，以及最值得复现的实验，并标注可核验的位置。`,
+    );
   }
 
   function saveInterests() {
     const next = draftInterests.length ? draftInterests : DEFAULT_INTERESTS;
     setInterests(next);
-    localStorage.setItem(STORAGE.interests, JSON.stringify(next));
+    localStorage.setItem(storage.interests, JSON.stringify(next));
     setSettingsOpen(false);
-    setToast("兴趣画像已更新");
-    void refreshDaily(next);
+    setRankingNow(Date.now());
+    showToast("兴趣画像已更新，本机推荐已重排");
+    void refreshDaily();
   }
 
   function toggleDraftInterest(interest: string) {
@@ -693,7 +1179,7 @@ export default function PaperOrbitClient({
               ref={searchRef}
               id="global-search"
               value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
+              onChange={(event) => updateSearchQuery(event.target.value)}
               placeholder="搜索 arXiv…"
               autoComplete="off"
             />
@@ -707,7 +1193,7 @@ export default function PaperOrbitClient({
               setSettingsOpen(true);
             }}
             aria-label={`编辑兴趣画像，当前用户 ${viewer.displayName}`}
-            title={`${viewer.email} · ${viewer.role === "owner" ? "OWNER" : "MANAGER"}`}
+            title={`${viewer.email} · ${VIEWER_ROLE_LABELS[viewer.role]}`}
           >
             {viewer.initials}
           </button>
@@ -731,32 +1217,62 @@ export default function PaperOrbitClient({
             aiInput={aiInput}
             aiBusy={aiBusy}
             aiMode={aiMode}
+            aiConnection={aiConnection}
+            aiConnectionReady={aiConnectionReady}
+            lastAiRun={lastAiRun}
+            paperFeedback={paperFeedback}
             onRefresh={() => void refreshDaily()}
             onToggleSaved={toggleSaved}
             onStartReading={startReading}
             onGenerateReport={(paper) => void generateReport(paper)}
-            onSelectCopilotPaper={setCopilotPaperId}
+            onPaperFeedback={updatePaperFeedback}
+            onSelectCopilotPaper={selectCopilotPaper}
             onAiInput={setAiInput}
             onAskAi={(question) => void askAI(question)}
-            onSendToCodex={() => void sendToCodex()}
+            onOpenAiSettings={() => {
+              setAiConnectionMessage("");
+              setResearchConnectionMessage("");
+              setAiSettingsOpen(true);
+            }}
+            onDeepRead={() => void deepReadWithCopilot()}
           />
         ) : null}
 
         {activeView === "discover" ? (
-          <CollectionView
-            eyebrow="DISCOVER / ARXIV INDEX"
-            title="从整个 arXiv 发现下一篇"
-            description={searchMessage}
+          <DiscoverView
+            query={searchQuery}
+            filters={searchFilters}
+            meta={searchMeta}
+            message={searchMessage}
             papers={searchResults}
-            emptyLabel="在上方搜索框输入主题、作者或 arXiv ID。也可以从 Physical AI、world models、visual reasoning 开始。"
             savedIds={savedIds}
             readIds={readIds}
             loading={searchLoading}
+            onQueryChange={updateSearchQuery}
+            onFilterChange={updateSearchFilter}
+            onSubmit={(event) => void submitSearch(event)}
+            onClear={clearSearch}
+            onPrevious={() => {
+              if (!searchMeta) return;
+              void submitSearch(
+                undefined,
+                undefined,
+                Math.max(0, searchMeta.start - searchMeta.limit),
+              );
+            }}
+            onNext={() => {
+              if (!searchMeta) return;
+              void submitSearch(
+                undefined,
+                undefined,
+                searchMeta.start + searchMeta.limit,
+              );
+            }}
             onToggleSaved={toggleSaved}
             onStartReading={startReading}
             onGenerateReport={(paper) => void generateReport(paper)}
             onUseSuggestion={(query) => {
-              setSearchQuery(query);
+              updateSearchQuery(query);
               void submitSearch(undefined, query);
             }}
           />
@@ -810,8 +1326,21 @@ export default function PaperOrbitClient({
                 <strong>{viewer.displayName}</strong>
                 <small>{viewer.email}</small>
               </div>
-              <b>{viewer.role === "owner" ? "OWNER" : "MANAGER"}</b>
-              <a href="/signout-with-chatgpt?return_to=%2F">切换账号</a>
+              <b>{VIEWER_ROLE_LABELS[viewer.role]}</b>
+              <div className="viewer-actions">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSettingsOpen(false);
+                    setAiConnectionMessage("");
+                    setResearchConnectionMessage("");
+                    setAiSettingsOpen(true);
+                  }}
+                >
+                  管理 API 连接
+                </button>
+                <a href="/signout-with-chatgpt?return_to=%2F">切换账号</a>
+              </div>
             </div>
             <div className="interest-grid">
               {INTEREST_OPTIONS.map((interest) => (
@@ -827,12 +1356,246 @@ export default function PaperOrbitClient({
                 </button>
               ))}
             </div>
+            <section className="feedback-history" aria-labelledby="feedback-history-title">
+              <div>
+                <p className="eyebrow">LOCAL FEEDBACK</p>
+                <h3 id="feedback-history-title">论文反馈记录</h3>
+              </div>
+              <p>
+                这些信号只保存在当前浏览器。即使论文暂时离开今日列表，也能在这里清除反馈。
+              </p>
+              {paperFeedback.length ? (
+                <ul>
+                  {paperFeedback.map((item) => {
+                    const paper = allPapers.find(
+                      (candidate) =>
+                        canonicalPaperId(candidate.id)
+                        === canonicalPaperId(item.paperId),
+                    );
+                    return (
+                      <li key={`${item.projectId}:${item.paperId}`}>
+                        <span>
+                          <strong>{paper?.title ?? `arXiv ${item.paperId}`}</strong>
+                          <small>{FEEDBACK_LABELS[item.kind]}</small>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => clearStoredFeedback(item)}
+                          aria-label={`清除 ${paper?.title ?? item.paperId} 的反馈`}
+                        >
+                          清除
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : (
+                <p className="feedback-history-empty">尚未记录显式论文反馈。</p>
+              )}
+            </section>
             <div className="modal-actions">
               <button className="text-button" type="button" onClick={() => setSettingsOpen(false)}>
                 取消
               </button>
               <button className="primary-button" type="button" onClick={saveInterests}>
                 保存并刷新选刊
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {aiSettingsOpen ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setAiSettingsOpen(false)}>
+          <section
+            className="modal-sheet ai-connect-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ai-connect-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button className="modal-close" type="button" onClick={() => setAiSettingsOpen(false)} aria-label="关闭">
+              ×
+            </button>
+            <p className="eyebrow">PERSONAL API CONNECTIONS / ENCRYPTED SESSION</p>
+            <h2 id="ai-connect-title">连接你的研究服务</h2>
+            <p>
+              每位 READER 使用自己的外部服务额度。OpenAI Key 用于 PDF 全文 Copilot；arXiv 公开检索不需要 Key；可选的 Semantic Scholar Key 用于更稳定地读取引用与高影响引用信号。
+            </p>
+
+            <section className="provider-section" aria-labelledby="openai-provider-title">
+              <div className="provider-heading">
+                <div>
+                  <span>FULL-TEXT COPILOT</span>
+                  <h3 id="openai-provider-title">OpenAI API</h3>
+                </div>
+                <small>个人计费</small>
+              </div>
+
+              <div className={`ai-connection-card ${aiConnection.connected ? "connected" : ""}`}>
+                <span aria-hidden="true">{aiConnection.connected ? "✓" : "○"}</span>
+                <div>
+                  <strong>{aiConnection.connected ? "全文 AI 已连接" : "尚未连接真实 AI"}</strong>
+                  <small>
+                    {aiConnection.connected
+                      ? `${aiConnection.model ?? "OpenAI"} · ${aiConnection.source === "session" ? "你的临时会话" : "仅管理账号的站点共享连接"}`
+                      : "普通用户未连接个人 Key 时只提供不消耗 token 的摘要预览。"}
+                  </small>
+                </div>
+              </div>
+
+              {aiConnection.sessionAvailable ? (
+                <form className="ai-connect-form" onSubmit={connectOpenAI}>
+                  <label htmlFor="openai-api-key">
+                    {aiConnection.source === "session" ? "更换个人 API Key" : "个人 OpenAI API Key"}
+                  </label>
+                  <div>
+                    <input
+                      id="openai-api-key"
+                      type="password"
+                      value={apiKeyInput}
+                      onChange={(event) => setApiKeyInput(event.target.value)}
+                      placeholder="sk-…"
+                      autoComplete="off"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      disabled={aiConnectionBusy}
+                    />
+                    <button type="submit" disabled={!apiKeyInput.trim() || aiConnectionBusy}>
+                      {aiConnectionBusy ? "连接中…" : aiConnection.source === "session" ? "验证并更换" : "验证并连接"}
+                    </button>
+                  </div>
+                  <small>
+                    Key 只用于验证和调用 OpenAI，随后保存在服务端加密的 HttpOnly 浏览器会话中；不写入 localStorage、数据库或仓库，关闭浏览器或连接满 12 小时后失效。
+                  </small>
+                </form>
+              ) : (
+                <div className="ai-config-warning">
+                  服务器管理员还需要配置 <code>PAPER_ORBIT_SESSION_SECRET</code>，才能安全接收每位用户自己的 API Key。
+                </div>
+              )}
+
+              {aiConnectionMessage ? (
+                <p className="ai-connection-message" role="status">{aiConnectionMessage}</p>
+              ) : null}
+
+              <div className="ai-connect-links">
+                <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer">
+                  创建 OpenAI API Key ↗
+                </a>
+                <a href="https://platform.openai.com/settings/organization/billing/overview" target="_blank" rel="noreferrer">
+                  查看 API 计费 ↗
+                </a>
+              </div>
+
+              {aiConnection.source === "session" ? (
+                <button className="provider-disconnect" type="button" onClick={() => void disconnectOpenAI()} disabled={aiConnectionBusy}>
+                  清除个人 OpenAI 会话
+                </button>
+              ) : null}
+            </section>
+
+            <section className="provider-section" aria-labelledby="paper-data-provider-title">
+              <div className="provider-heading">
+                <div>
+                  <span>PAPER DISCOVERY &amp; IMPACT</span>
+                  <h3 id="paper-data-provider-title">论文数据 API</h3>
+                </div>
+                <small>按用户隔离</small>
+              </div>
+
+              <div className="provider-status-grid">
+                <div className="provider-status connected">
+                  <span aria-hidden="true">✓</span>
+                  <div>
+                    <strong>arXiv 公开 API</strong>
+                    <small>检索、分类、日期与 PDF 地址 · 无需也不存在个人 API Key</small>
+                  </div>
+                </div>
+                <div className={`provider-status ${researchConnection.semanticScholar.keyConnected ? "connected" : ""}`}>
+                  <span aria-hidden="true">{researchConnection.semanticScholar.keyConnected ? "✓" : "○"}</span>
+                  <div>
+                    <strong>
+                      {researchConnection.semanticScholar.keyConnected
+                        ? "Semantic Scholar Key 已连接"
+                        : "Semantic Scholar 公开额度"}
+                    </strong>
+                    <small>
+                      {!researchConnectionReady
+                        ? "正在检查连接状态…"
+                        : researchConnection.semanticScholar.source === "session"
+                          ? "你的临时会话 · 引用与高影响引用"
+                          : researchConnection.semanticScholar.source === "shared"
+                            ? "仅管理账号的站点共享连接"
+                            : "无需 Key 也可使用，但高峰期可能受共享限流影响"}
+                    </small>
+                  </div>
+                </div>
+              </div>
+
+              {researchConnection.semanticScholar.sessionAvailable ? (
+                <form className="ai-connect-form" onSubmit={connectSemanticScholar}>
+                  <label htmlFor="semantic-scholar-api-key">
+                    {researchConnection.semanticScholar.source === "session"
+                      ? "更换个人 Semantic Scholar API Key"
+                      : "个人 Semantic Scholar API Key（可选）"}
+                  </label>
+                  <div>
+                    <input
+                      id="semantic-scholar-api-key"
+                      type="password"
+                      value={semanticScholarKeyInput}
+                      onChange={(event) => setSemanticScholarKeyInput(event.target.value)}
+                      placeholder="Semantic Scholar API Key"
+                      autoComplete="off"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      disabled={researchConnectionBusy}
+                    />
+                    <button type="submit" disabled={!semanticScholarKeyInput.trim() || researchConnectionBusy}>
+                      {researchConnectionBusy
+                        ? "连接中…"
+                        : researchConnection.semanticScholar.source === "session"
+                          ? "验证并更换"
+                          : "验证并连接"}
+                    </button>
+                  </div>
+                  <small>
+                    Key 仅由 Paper Orbit 后端发送到 Semantic Scholar 的 <code>x-api-key</code> 请求头，并使用与 OpenAI Key 相同的加密会话边界。
+                  </small>
+                </form>
+              ) : (
+                <div className="ai-config-warning">
+                  服务器管理员还需要配置 <code>PAPER_ORBIT_SESSION_SECRET</code>，才能安全接收个人论文数据 Key。
+                </div>
+              )}
+
+              {researchConnectionMessage ? (
+                <p className="ai-connection-message" role="status">{researchConnectionMessage}</p>
+              ) : null}
+
+              <div className="ai-connect-links">
+                <a href="https://info.arxiv.org/help/api/user-manual.html" target="_blank" rel="noreferrer">
+                  arXiv API 说明 ↗
+                </a>
+                <a href="https://www.semanticscholar.org/product/api" target="_blank" rel="noreferrer">
+                  申请 Semantic Scholar API Key ↗
+                </a>
+              </div>
+
+              {researchConnection.semanticScholar.source === "session" ? (
+                <button className="provider-disconnect" type="button" onClick={() => void disconnectSemanticScholar()} disabled={researchConnectionBusy}>
+                  清除个人论文数据会话
+                </button>
+              ) : null}
+            </section>
+
+            <div className="modal-actions ai-modal-actions">
+              <span>所有个人 Key 均绑定当前 ChatGPT 登录邮箱，并在 12 小时后失效。</span>
+              <button className="primary-button" type="button" onClick={() => setAiSettingsOpen(false)}>
+                完成
               </button>
             </div>
           </section>
@@ -854,7 +1617,7 @@ export default function PaperOrbitClient({
             <p className="eyebrow">READING REPORT / {activeReport.paperId}</p>
             <h2 id="report-title">{activeReport.paperTitle}</h2>
             <div className="report-meta">
-              {new Date(activeReport.createdAt).toLocaleString("zh-CN")} · {activeReport.mode === "openai" ? "OpenAI 深度分析" : "摘要辅助模式"}
+              {new Date(activeReport.createdAt).toLocaleString("zh-CN")} · {activeReport.mode === "openai" ? "OpenAI PDF 全文分析" : "摘要辅助模式"}
             </div>
             <div className="report-content">{activeReport.content}</div>
             <div className="modal-actions">
@@ -870,7 +1633,12 @@ export default function PaperOrbitClient({
       ) : null}
 
       <div className={`toast ${toast ? "visible" : ""}`} role="status" aria-live="polite">
-        {toast}
+        <span>{toast?.message}</span>
+        {toast?.onAction ? (
+          <button type="button" onClick={toast.onAction}>
+            {toast.actionLabel ?? "撤销"}
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -882,9 +1650,11 @@ type PaperEntryProps = {
   featured?: boolean;
   saved: boolean;
   reading: boolean;
+  feedback?: FeedbackKind;
   onToggleSaved: (id: string) => void;
   onStartReading: (paper: Paper) => void;
   onGenerateReport: (paper: Paper) => void;
+  onPaperFeedback?: (paper: Paper, kind: FeedbackKind) => void;
 };
 
 function PaperEntry({
@@ -893,10 +1663,13 @@ function PaperEntry({
   featured = false,
   saved,
   reading,
+  feedback,
   onToggleSaved,
   onStartReading,
   onGenerateReport,
+  onPaperFeedback,
 }: PaperEntryProps) {
+  const recommendation = paper.recommendation;
   return (
     <article className={`paper-entry ${featured ? "featured" : ""}`}>
       <div className="paper-number" aria-hidden="true">
@@ -921,6 +1694,56 @@ function PaperEntry({
           {paper.authors.slice(0, 4).join(" · ")}
           {paper.authors.length > 4 ? " et al." : ""}
         </div>
+        {recommendation && onPaperFeedback ? (
+          <details className="recommendation-details">
+            <summary>为什么推荐</summary>
+            <p>{recommendation.reason}</p>
+            <div className="signal-grid" aria-label="推荐信号，满分 100">
+              {(
+                [
+                  ["相关度", recommendation.signals.relevance],
+                  ["本地偏好", recommendation.signals.affinity],
+                  ["新鲜度", recommendation.signals.freshness],
+                  ["影响力", recommendation.signals.influence],
+                  ["证据强度", recommendation.signals.evidence],
+                ] as Array<[string, number]>
+              ).map(([label, value]) => (
+                <span key={label}>
+                  <small>{label}</small>
+                  <strong>{Math.max(0, Math.min(100, value))}</strong>
+                </span>
+              ))}
+            </div>
+            <dl className="recommendation-evidence">
+              <div>
+                <dt>引用</dt>
+                <dd>{recommendation.citationCount ?? "—"}</dd>
+              </div>
+              <div>
+                <dt>高影响引用</dt>
+                <dd>{recommendation.influentialCitationCount ?? "—"}</dd>
+              </div>
+              <div>
+                <dt>多样性探索</dt>
+                <dd>{recommendation.exploration ? "是" : "否"}</dd>
+              </div>
+            </dl>
+            <div className="paper-feedback" role="group" aria-label={`评价 ${paper.title} 的推荐质量`}>
+              {(Object.keys(FEEDBACK_LABELS) as FeedbackKind[]).map((kind) => (
+                <button
+                  key={kind}
+                  type="button"
+                  aria-pressed={feedback === kind}
+                  className={feedback === kind ? "selected" : ""}
+                  onClick={() => onPaperFeedback(paper, kind)}
+                  title={feedback === kind ? "再次点击可清除" : undefined}
+                >
+                  {FEEDBACK_LABELS[kind]}
+                </button>
+              ))}
+            </div>
+          </details>
+        ) : null}
       </div>
       <div className="paper-metrics">
         <div className="score-block">
@@ -969,15 +1792,21 @@ type TodayViewProps = {
   chat: ChatMessage[];
   aiInput: string;
   aiBusy: boolean;
-  aiMode: "openai" | "preview";
+  aiMode: AiMode;
+  aiConnection: AiConnection;
+  aiConnectionReady: boolean;
+  lastAiRun: AiRunMeta | null;
+  paperFeedback: PaperFeedback[];
   onRefresh: () => void;
   onToggleSaved: (id: string) => void;
   onStartReading: (paper: Paper) => void;
   onGenerateReport: (paper: Paper) => void;
+  onPaperFeedback: (paper: Paper, kind: FeedbackKind) => void;
   onSelectCopilotPaper: (id: string) => void;
   onAiInput: (value: string) => void;
   onAskAi: (question?: string) => void;
-  onSendToCodex: () => void;
+  onOpenAiSettings: () => void;
+  onDeepRead: () => void;
 };
 
 function TodayView(props: TodayViewProps) {
@@ -999,6 +1828,13 @@ function TodayView(props: TodayViewProps) {
   const edition = Math.floor(
     (today.getTime() - startOfYear.getTime()) / 86_400_000,
   );
+  const aiStatusLabel = !props.aiConnectionReady
+    ? "检查中"
+    : !props.aiConnection.connected
+      ? "AI 未连接"
+      : props.aiMode === "preview"
+        ? "安全降级"
+        : `${props.aiConnection.model ?? "OpenAI"} · 全文`;
 
   return (
     <div className="page-wrap">
@@ -1014,7 +1850,7 @@ function TodayView(props: TodayViewProps) {
           </p>
           <h1>今天值得读的 <em>{props.feed.length}</em> 篇</h1>
           <p className="edition-deck">
-            综合兴趣匹配、阅读反馈、时效、影响力与证据质量，再做主题去重，保留 10 篇最值得投入注意力的工作。
+            公开候选池只提供论文与影响力信号；兴趣、阅读反馈与主题去重全部在这台设备上计算，保留 10 篇最值得投入注意力的工作。
           </p>
         </div>
         <div className="edition-controls">
@@ -1043,9 +1879,15 @@ function TodayView(props: TodayViewProps) {
               featured={index === 0}
               saved={props.savedIds.has(paper.id)}
               reading={props.readIds.has(paper.id)}
+              feedback={props.paperFeedback.find(
+                (item) =>
+                  item.projectId === DEFAULT_PROJECT_ID
+                  && canonicalPaperId(item.paperId) === canonicalPaperId(paper.id),
+              )?.kind}
               onToggleSaved={props.onToggleSaved}
               onStartReading={props.onStartReading}
               onGenerateReport={props.onGenerateReport}
+              onPaperFeedback={props.onPaperFeedback}
             />
           ))}
         </section>
@@ -1058,10 +1900,17 @@ function TodayView(props: TodayViewProps) {
                 <p>AI RESEARCH COMPANION</p>
                 <h2 id="copilot-title">Paper Copilot</h2>
               </div>
-              <span className={`ai-status ${props.aiMode}`}>
-                {props.aiMode === "openai" ? "OPENAI" : "摘要模式"}
+              <span className={`ai-status ${props.aiConnection.connected ? "openai" : "preview"}`}>
+                {aiStatusLabel}
               </span>
             </div>
+
+            <button className="ai-connection-button" type="button" onClick={props.onOpenAiSettings}>
+              <span aria-hidden="true">{props.aiConnection.connected ? "●" : "○"}</span>
+              {props.aiConnection.connected
+                ? `${props.aiConnection.source === "session" ? "个人 OpenAI 已连接" : "共享 OpenAI 已连接"} · 管理`
+                : "连接 OpenAI · 启用 PDF 全文阅读"}
+            </button>
 
             <label className="paper-select-label" htmlFor="copilot-paper">
               当前论文
@@ -1080,7 +1929,7 @@ function TodayView(props: TodayViewProps) {
             </select>
 
             <div className="chat-window" aria-live="polite">
-              {props.chat.slice(-4).map((message, index) => (
+              {props.chat.slice(-6).map((message, index) => (
                 <div key={`${message.role}-${index}`} className={`chat-message ${message.role}`}>
                   <span>{message.role === "assistant" ? "PO" : "YOU"}</span>
                   <p>{message.text}</p>
@@ -1089,10 +1938,27 @@ function TodayView(props: TodayViewProps) {
               {props.aiBusy ? (
                 <div className="chat-message assistant typing">
                   <span>PO</span>
-                  <p>正在阅读论文上下文<span aria-hidden="true">…</span></p>
+                  <p>正在把 arXiv PDF 全文交给模型阅读<span aria-hidden="true">…</span></p>
                 </div>
               ) : null}
             </div>
+
+            {props.lastAiRun ? (
+              <div className={`ai-run-meta ${props.lastAiRun.source === "fulltext-pdf" ? "fulltext" : "preview"}`}>
+                <span>
+                  {props.lastAiRun.source === "fulltext-pdf" ? "PDF 全文" : "摘要预览"}
+                  {props.lastAiRun.model ? ` · ${props.lastAiRun.model}` : ""}
+                  {props.lastAiRun.pdfDetail === "high" ? " · 图表增强" : ""}
+                </span>
+                {props.lastAiRun.usage ? (
+                  <small>
+                    本次输入 {props.lastAiRun.usage.inputTokens.toLocaleString("zh-CN")} · 输出 {props.lastAiRun.usage.outputTokens.toLocaleString("zh-CN")} tokens
+                  </small>
+                ) : null}
+              </div>
+            ) : !props.aiConnection.connected ? (
+              <p className="ai-preview-note">未连接时不会消耗 token；返回的是摘要预览，不是模型回答。</p>
+            ) : null}
 
             <div className="quick-prompts">
               {quickPrompts.map((prompt) => (
@@ -1123,8 +1989,8 @@ function TodayView(props: TodayViewProps) {
                 ↑
               </button>
             </form>
-            <button className="codex-button" type="button" onClick={props.onSendToCodex}>
-              交给 Codex 深挖这篇论文 ↗
+            <button className="deep-read-button" type="button" onClick={props.onDeepRead} disabled={props.aiBusy}>
+              让全文 Copilot 深挖这篇论文 ↗
             </button>
           </section>
 
@@ -1160,6 +2026,252 @@ function TodayView(props: TodayViewProps) {
           </blockquote>
         </aside>
       </div>
+    </div>
+  );
+}
+
+type DiscoverViewProps = {
+  query: string;
+  filters: SearchFilters;
+  meta: SearchMeta | null;
+  message: string;
+  papers: Paper[];
+  savedIds: Set<string>;
+  readIds: Set<string>;
+  loading: boolean;
+  onQueryChange: (value: string) => void;
+  onFilterChange: <K extends keyof SearchFilters>(
+    name: K,
+    value: SearchFilters[K],
+  ) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onClear: () => void;
+  onPrevious: () => void;
+  onNext: () => void;
+  onToggleSaved: (id: string) => void;
+  onStartReading: (paper: Paper) => void;
+  onGenerateReport: (paper: Paper) => void;
+  onUseSuggestion: (query: string) => void;
+};
+
+function DiscoverView(props: DiscoverViewProps) {
+  return (
+    <div className="page-wrap collection-page discover-page">
+      <section className="collection-header discover-header">
+        <p className="eyebrow">DISCOVER / ARXIV INDEX</p>
+        <h1>从整个 arXiv 发现下一篇</h1>
+        <p>
+          用结构化条件组合标题、作者、摘要、分类与年份；Paper Orbit 只生成安全查询，不接受原始 arXiv 语法。
+        </p>
+
+        <form className="advanced-search" onSubmit={props.onSubmit}>
+          <div className="advanced-search-main">
+            <label htmlFor="discover-query">关键词、作者或 arXiv ID</label>
+            <div>
+              <input
+                id="discover-query"
+                value={props.query}
+                onChange={(event) => props.onQueryChange(event.target.value)}
+                placeholder="例如 world models、Fei-Fei Li、2607.08639"
+                autoComplete="off"
+                aria-describedby="search-status"
+              />
+              <button type="submit" disabled={!props.query.trim() || props.loading}>
+                {props.loading ? "检索中…" : "检索 arXiv"}
+              </button>
+            </div>
+          </div>
+
+          <div className="advanced-search-grid">
+            <label>
+              <span>字段</span>
+              <select
+                value={props.filters.field}
+                onChange={(event) =>
+                  props.onFilterChange(
+                    "field",
+                    event.target.value as ArxivSearchField,
+                  )}
+              >
+                <option value="all">全部字段</option>
+                <option value="title">标题</option>
+                <option value="author">作者</option>
+                <option value="abstract">摘要</option>
+              </select>
+            </label>
+            <label>
+              <span>匹配</span>
+              <select
+                value={props.filters.match}
+                onChange={(event) =>
+                  props.onFilterChange(
+                    "match",
+                    event.target.value as ArxivSearchMatch,
+                  )}
+              >
+                <option value="all">包含全部词</option>
+                <option value="any">包含任一词</option>
+                <option value="phrase">精确短语</option>
+              </select>
+            </label>
+            <label className="exclude-filter">
+              <span>排除词</span>
+              <input
+                value={props.filters.exclude}
+                onChange={(event) =>
+                  props.onFilterChange("exclude", event.target.value)}
+                placeholder="例如 survey review"
+              />
+            </label>
+            <label>
+              <span>分类</span>
+              <select
+                value={props.filters.category}
+                onChange={(event) =>
+                  props.onFilterChange("category", event.target.value)}
+              >
+                <option value="">全部分类</option>
+                <option value="cs.RO">cs.RO · Robotics</option>
+                <option value="cs.CV">cs.CV · Computer Vision</option>
+                <option value="cs.AI">cs.AI · Artificial Intelligence</option>
+                <option value="cs.LG">cs.LG · Machine Learning</option>
+                <option value="cs.CL">cs.CL · Language</option>
+                <option value="stat.ML">stat.ML · Machine Learning</option>
+                <option value="physics.comp-ph">physics.comp-ph</option>
+              </select>
+            </label>
+            <label>
+              <span>起始年份</span>
+              <input
+                type="number"
+                inputMode="numeric"
+                min="1991"
+                max="2100"
+                value={props.filters.fromYear}
+                onChange={(event) =>
+                  props.onFilterChange("fromYear", event.target.value)}
+                placeholder="1991"
+              />
+            </label>
+            <label>
+              <span>结束年份</span>
+              <input
+                type="number"
+                inputMode="numeric"
+                min="1991"
+                max="2100"
+                value={props.filters.toYear}
+                onChange={(event) =>
+                  props.onFilterChange("toYear", event.target.value)}
+                placeholder={String(new Date().getFullYear())}
+              />
+            </label>
+            <label>
+              <span>排序依据</span>
+              <select
+                value={props.filters.sort}
+                onChange={(event) =>
+                  props.onFilterChange(
+                    "sort",
+                    event.target.value as ArxivSearchSort,
+                  )}
+              >
+                <option value="relevance">相关度</option>
+                <option value="submittedDate">提交时间</option>
+                <option value="lastUpdatedDate">更新时间</option>
+              </select>
+            </label>
+            <label>
+              <span>顺序</span>
+              <select
+                value={props.filters.order}
+                onChange={(event) =>
+                  props.onFilterChange(
+                    "order",
+                    event.target.value as ArxivSearchOrder,
+                  )}
+              >
+                <option value="descending">降序</option>
+                <option value="ascending">升序</option>
+              </select>
+            </label>
+            <label>
+              <span>每页数量</span>
+              <select
+                value={props.filters.limit}
+                onChange={(event) =>
+                  props.onFilterChange("limit", Number(event.target.value))}
+              >
+                {[10, 20, 30, 50].map((limit) => (
+                  <option key={limit} value={limit}>{limit} 篇</option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="advanced-search-actions">
+            <button type="button" onClick={props.onClear}>清除条件</button>
+            <small>修改关键词或筛选后会从第 1 页重新检索。</small>
+          </div>
+        </form>
+
+        <div className="search-suggestions" aria-label="搜索建议">
+          {["physical reasoning", "vision-language-action", "world models", "AI for science"].map((query) => (
+            <button key={query} type="button" onClick={() => props.onUseSuggestion(query)}>
+              {query} ↗
+            </button>
+          ))}
+        </div>
+        <p id="search-status" className="search-status" role="status" aria-live="polite">
+          {props.message}
+        </p>
+      </section>
+
+      {props.loading ? <div className="loading-rule" aria-hidden="true"><i /></div> : null}
+      <section className="paper-list collection-list" aria-busy={props.loading}>
+        {props.papers.length ? (
+          props.papers.map((paper, index) => (
+            <PaperEntry
+              key={paper.id}
+              paper={paper}
+              index={(props.meta?.start ?? 0) + index}
+              saved={props.savedIds.has(paper.id)}
+              reading={props.readIds.has(paper.id)}
+              onToggleSaved={props.onToggleSaved}
+              onStartReading={props.onStartReading}
+              onGenerateReport={props.onGenerateReport}
+            />
+          ))
+        ) : (
+          <div className="empty-state">
+            <span aria-hidden="true">◎</span>
+            <h2>索引仍是空的</h2>
+            <p>输入主题、作者或 arXiv ID，也可以先选择一个结构化筛选条件。</p>
+          </div>
+        )}
+      </section>
+
+      {props.meta && props.meta.totalResults > 0 ? (
+        <nav className="search-pagination" aria-label="搜索结果分页">
+          <button
+            type="button"
+            onClick={props.onPrevious}
+            disabled={!props.meta.hasPrevious || props.loading}
+          >
+            ← 上一页
+          </button>
+          <span>
+            第 {Math.floor(props.meta.start / props.meta.limit) + 1} 页 · 共 {props.meta.totalResults} 篇
+          </span>
+          <button
+            type="button"
+            onClick={props.onNext}
+            disabled={!props.meta.hasNext || props.loading}
+          >
+            下一页 →
+          </button>
+        </nav>
+      ) : null}
     </div>
   );
 }

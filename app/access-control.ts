@@ -4,7 +4,7 @@ import {
   type ChatGPTUser,
 } from "./chatgpt-auth";
 
-const PAPER_ORBIT_USERS: Record<
+const PAPER_ORBIT_PRIVILEGED_USERS: Record<
   string,
   { role: PaperOrbitViewer["role"]; fallbackName: string }
 > = {
@@ -22,6 +22,19 @@ function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
+export function paperOrbitRoleForEmail(
+  email: string | null | undefined,
+): PaperOrbitViewer["role"] {
+  if (!email) return "reader";
+  return PAPER_ORBIT_PRIVILEGED_USERS[normalizeEmail(email)]?.role ?? "reader";
+}
+
+export function isPaperOrbitPrivilegedEmail(
+  email: string | null | undefined,
+) {
+  return paperOrbitRoleForEmail(email) !== "reader";
+}
+
 function initialsFor(name: string, email: string) {
   const words = name.trim().split(/\s+/).filter(Boolean);
   if (words.length >= 2) {
@@ -34,16 +47,15 @@ function initialsFor(name: string, email: string) {
 
 export function paperOrbitViewerFor(
   user: ChatGPTUser,
-): PaperOrbitViewer | null {
+): PaperOrbitViewer {
   const email = normalizeEmail(user.email);
-  const access = PAPER_ORBIT_USERS[email];
-  if (!access) return null;
-  const displayName = user.fullName?.trim() || access.fallbackName;
+  const access = PAPER_ORBIT_PRIVILEGED_USERS[email];
+  const displayName = user.fullName?.trim() || access?.fallbackName || email;
   return {
     displayName,
     email,
     initials: initialsFor(displayName, email),
-    role: access.role,
+    role: access?.role ?? "reader",
   };
 }
 
@@ -53,12 +65,6 @@ export async function paperOrbitApiAccessError() {
     return Response.json(
       { error: "ChatGPT sign-in is required" },
       { status: 401 },
-    );
-  }
-  if (!paperOrbitViewerFor(user)) {
-    return Response.json(
-      { error: "This ChatGPT account is not authorized for Paper Orbit" },
-      { status: 403 },
     );
   }
   return null;
