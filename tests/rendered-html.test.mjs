@@ -381,6 +381,7 @@ test("connects a private OpenAI session and sends only the validated arXiv PDF",
     assert.deepEqual(status, {
       connected: true,
       source: "session",
+      baseUrl: "https://api.openai.com/v1",
       model: "gpt-5.6",
       sessionAvailable: true,
     });
@@ -462,6 +463,151 @@ test("connects a private OpenAI session and sends only the validated arXiv PDF",
     assert.equal(disconnectResponse.status, 200);
     assert.match(disconnectResponse.headers.get("set-cookie") ?? "", /Max-Age=0/);
   });
+});
+
+test("uses a reader-owned OpenAI-compatible Base URL, short key, and custom model", async () => {
+  const apiKey = "alt-key";
+  const readerEmail = "compatible-reader@example.com";
+  const submittedBaseUrl = "https://gateway.paperorbit.ai/openai/v1/";
+  const baseUrl = "https://gateway.paperorbit.ai/openai/v1";
+  const model = "vendor/research-model@2026";
+  const upstreamCalls = [];
+
+  await withMockedFetch(async (input, init = {}) => {
+    const url = typeof input === "string" ? input : input.url;
+    upstreamCalls.push({ url, init });
+    assert.equal(new Headers(init.headers).get("authorization"), `Bearer ${apiKey}`);
+    assert.equal(init.redirect, "error");
+
+    if (url === `${baseUrl}/models`) {
+      return Response.json({ data: [{ id: model, object: "model" }] });
+    }
+    if (url === `${baseUrl}/responses`) {
+      return Response.json({
+        output_text:
+          "这篇论文首先定义研究问题，再由核心表征模块提取状态，随后通过训练目标约束动态变化，最后在实验中验证主要组件。回答来自自定义兼容服务，用于确认端点、模型和全文输入均按个人会话隔离。",
+        usage: {
+          input_tokens: 321,
+          output_tokens: 54,
+          total_tokens: 375,
+        },
+      });
+    }
+    throw new Error(`Unexpected upstream request: ${url}`);
+  }, async () => {
+    const connectResponse = await request("/api/ai/session", readerEmail, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ apiKey, baseUrl: submittedBaseUrl, model }),
+    });
+    assert.equal(connectResponse.status, 200);
+    const connect = await connectResponse.json();
+    assert.deepEqual(connect, {
+      connected: true,
+      source: "session",
+      baseUrl,
+      model,
+      sessionAvailable: true,
+    });
+    assert.doesNotMatch(JSON.stringify(connect), /alt-key/);
+
+    const setCookie = connectResponse.headers.get("set-cookie") ?? "";
+    assert.match(setCookie, /^paper_orbit_openai_session=v1\./);
+    assert.ok(setCookie.length < 4096);
+    assert.doesNotMatch(setCookie, /alt-key|gateway\.paperorbit|research-model/);
+    const cookie = setCookie.split(";")[0];
+
+    const statusResponse = await request("/api/ai/session", readerEmail, {
+      headers: { cookie },
+    });
+    assert.equal(statusResponse.status, 200);
+    assert.deepEqual(await statusResponse.json(), {
+      connected: true,
+      source: "session",
+      baseUrl,
+      model,
+      sessionAvailable: true,
+    });
+
+    const aiResponse = await request("/api/ai", readerEmail, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        paper: {
+          id: "2607.00002",
+          title: "Compatible Provider Test Paper",
+          authors: ["Researcher Two"],
+          summary: "A short metadata summary.",
+          category: "cs.AI",
+          tags: ["Reasoning"],
+        },
+        action: "chat",
+        prompt: "请解释这篇论文的核心机制。",
+      }),
+    });
+    assert.equal(aiResponse.status, 200);
+    const answer = await aiResponse.json();
+    assert.equal(answer.mode, "openai");
+    assert.equal(answer.provider, "compatible");
+    assert.equal(answer.model, model);
+    assert.equal(answer.credentialSource, "session");
+
+    const responsesCall = upstreamCalls.find(
+      (call) => call.url === `${baseUrl}/responses`,
+    );
+    assert.ok(responsesCall);
+    const payload = JSON.parse(responsesCall.init.body);
+    assert.equal(payload.model, model);
+    assert.equal(payload.input[0].content[0].type, "input_file");
+    assert.equal(
+      payload.input[0].content[0].file_url,
+      "https://arxiv.org/pdf/2607.00002",
+    );
+  });
+});
+
+test("rejects unsafe custom AI endpoints before sending a credential", async () => {
+  const unsafeBaseUrls = [
+    "http://gateway.paperorbit.ai/v1",
+    "https://localhost/v1",
+    "https://service.local/v1",
+    "https://127.0.0.1/v1",
+    "https://2130706433/v1",
+    "https://169.254.169.254/v1",
+    "https://[::1]/v1",
+    "https://metadata.google.internal/v1",
+    "https://user:password@gateway.paperorbit.ai/v1",
+    "https://gateway.paperorbit.ai:8443/v1",
+    "https://gateway.paperorbit.ai/v1?tenant=private",
+    "https://gateway.paperorbit.ai/v1#responses",
+  ];
+  let fetchCalls = 0;
+
+  await withMockedFetch(async () => {
+    fetchCalls += 1;
+    throw new Error("Unsafe endpoint must not be fetched");
+  }, async () => {
+    for (const baseUrl of unsafeBaseUrls) {
+      const response = await request(
+        "/api/ai/session",
+        "unsafe-endpoint-reader@example.com",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            apiKey: "x",
+            baseUrl,
+            model: "research-model",
+          }),
+        },
+      );
+      assert.equal(response.status, 400, baseUrl);
+      const payload = await response.json();
+      assert.equal(payload.code, "OPENAI_BASE_URL_INVALID", baseUrl);
+    }
+  });
+
+  assert.equal(fetchCalls, 0);
 });
 
 test("connects a reader-owned Semantic Scholar key for influence enrichment", async () => {
@@ -593,7 +739,7 @@ test("connects a reader-owned Semantic Scholar key for influence enrichment", as
 });
 
 test("ships ten fallback papers and the local-first recommendation pipeline", async () => {
-  const [page, client, localUserStorage, access, route, searchQuery, researchSession, researchSessionRoute, aiRoute, encryptedSession, aiSession, sessionRoute, recommendation, layout, readme, envExample, hosting] = await Promise.all([
+  const [page, client, localUserStorage, access, route, searchQuery, researchSession, researchSessionRoute, aiRoute, encryptedSession, aiSession, sessionRoute, providerConfig, recommendation, layout, readme, envExample, hosting] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/paper-orbit-client.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/local-user-storage.ts", import.meta.url), "utf8"),
@@ -606,6 +752,7 @@ test("ships ten fallback papers and the local-first recommendation pipeline", as
     readFile(new URL("../app/api/encrypted-session.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/ai/openai-session.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/ai/session/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/ai/provider-config.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/arxiv/recommendation.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../README.md", import.meta.url), "utf8"),
@@ -663,15 +810,24 @@ test("ships ten fallback papers and the local-first recommendation pipeline", as
   assert.match(encryptedSession, /HttpOnly/);
   assert.match(encryptedSession, /SameSite=Strict/);
   assert.match(aiSession, /isPaperOrbitPrivilegedEmail/);
-  assert.match(sessionRoute, /api\.openai\.com\/v1\/models/);
+  assert.match(sessionRoute, /openAIProviderEndpoint\(baseUrl, "models"\)/);
+  assert.match(sessionRoute, /redirect: "error"/);
+  assert.match(aiRoute, /openAIProviderEndpoint\(credential\.baseUrl, "responses"\)/);
+  assert.match(providerConfig, /https:\/\/api\.openai\.com\/v1/);
+  assert.match(providerConfig, /normalizeOpenAIBaseUrl/);
+  assert.match(providerConfig, /169 && second === 254/);
+  assert.match(providerConfig, /normalized\.includes\(":"\)/);
   assert.match(researchSession, /isPaperOrbitPrivilegedEmail/);
   assert.match(researchSessionRoute, /api\.semanticscholar\.org/);
   assert.match(researchSessionRoute, /x-api-key/);
   assert.match(client, /连接你的研究服务/);
+  assert.match(client, /OpenAI 兼容 API/);
+  assert.match(client, /API Base URL/);
+  assert.match(client, /不限 sk- 前缀/);
   assert.match(client, /arXiv 公开 API/);
   assert.match(client, /Semantic Scholar API Key/);
   assert.match(client, /PDF 全文/);
-  assert.match(readme, /OpenAI Responses API/);
+  assert.match(readme, /Responses `\/responses`/);
   assert.match(readme, /Orbit v3 Local/);
   assert.match(readme, /90 天半衰期/);
   assert.match(envExample, /PAPER_ORBIT_SESSION_SECRET=/);

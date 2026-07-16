@@ -20,7 +20,7 @@ The older Codex-generated checkout is retained only as a migration backup.
 - Application authorization is enforced server-side by `app/access-control.ts`.
 - Every authenticated ChatGPT user may view the product and call authenticated Paper Orbit APIs. Anonymous requests remain rejected.
 - The existing owner and manager emails retain privileged roles; all other authenticated accounts receive the `reader` role.
-- Readers must use their own encrypted OpenAI API session for model-backed Copilot requests. Never route readers to `OPENAI_API_KEY` or another shared paid credential.
+- Readers must use their own encrypted OpenAI-compatible API session (public HTTPS Base URL, model ID, and API Key) for model-backed Copilot requests. Never route readers to `OPENAI_API_KEY` or another shared paid credential.
 - arXiv metadata search uses its public API and has no personal API key. Readers may optionally connect their own Semantic Scholar API key for influence metadata.
 - Shared `OPENAI_API_KEY` and `SEMANTIC_SCHOLAR_API_KEY` credentials are legacy administrator fallbacks and may only be used by the configured owner and manager accounts.
 - Preferences, library state, reading history, affinity data, explicit paper feedback, candidate cache, and generated reports are device-local browser data namespaced by the authenticated email. Legacy unscoped data may be claimed once by the first privileged account after upgrade.
@@ -41,6 +41,7 @@ The older Codex-generated checkout is retained only as a migration backup.
 - `app/api/ai/route.ts`: full-text arXiv PDF Copilot, report prompts, language consistency, source-overlap guard, token usage, and safe preview mode.
 - `app/api/ai/session/route.ts`: per-browser OpenAI API key validation and encrypted session lifecycle.
 - `app/api/ai/openai-session.ts`: AES-GCM session encryption, scoped cookies, and OpenAI configuration.
+- `app/api/ai/provider-config.ts`: OpenAI-compatible Base URL, model, and key normalization plus public-HTTPS SSRF protection.
 - `.openai/hosting.json`: existing OpenAI Sites project binding; preserve its opaque `project_id` exactly.
 - `tests/paper-orbit-core.test.mjs`: direct query, migration, decay, feedback, deduplication, and deterministic ranking behavior checks.
 - `tests/rendered-html.test.mjs`: product, authorization, API contract, privacy boundary, and Copilot quality checks.
@@ -48,6 +49,7 @@ The older Codex-generated checkout is retained only as a migration backup.
 ## AI behavior
 
 - `PAPER_ORBIT_SESSION_SECRET` enables encrypted, per-browser user-owned OpenAI API sessions. Never commit its value.
+- Personal sessions may use the official OpenAI API or a user-selected OpenAI-compatible public HTTPS Base URL and model. Custom providers must implement `/models`, Responses `/responses`, and PDF `input_file` URL support; redirects are rejected.
 - `OPENAI_API_KEY` remains an optional shared server credential for owner/manager accounts only; readers can never consume it.
 - `OPENAI_MODEL` optionally selects the model; the default is `gpt-5.6`.
 - Model-backed requests attach the validated arXiv PDF as an OpenAI Responses API `input_file`; the client never controls the file host.
@@ -73,6 +75,6 @@ Because this repository contains `.openai/hosting.json`, use the installed Sites
 - Recommendation pipeline: generic server candidate pool plus browser-local `orbit-v3-local` ranking; named `orbit-v2` weights remain the public-signal baseline.
 - Authentication: dispatch-owned Sign in with ChatGPT; every authenticated account is a reader, while the two existing accounts retain owner/manager roles.
 - Site access mode: public outer login entry with sign-in-gated application access; anonymous API requests remain blocked.
-- Paper Copilot: user-owned encrypted API sessions, full arXiv PDF input, conversation context, token usage, monolingual prompt rules, anti-copy constraints, and automatic quality repair are implemented locally.
+- Paper Copilot: user-owned encrypted OpenAI-compatible Base URL/model/key sessions, full arXiv PDF input, conversation context, token usage, monolingual prompt rules, anti-copy constraints, automatic quality repair, and unsafe-endpoint rejection are implemented locally.
 - Research metadata: arXiv uses its public API without a key; users may connect an encrypted personal Semantic Scholar key, while shared metadata credentials remain owner/manager-only.
 - Production AI key: not configured as of 2026-07-15, so the deployed Copilot uses safe preview mode.

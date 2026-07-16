@@ -404,13 +404,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .ai-connection-card small { margin-top: 4px; color: var(--muted); font: 500 9px/1.45 var(--sans); }
 .ai-connect-form { margin-top: 20px; }
 .ai-connect-form > label { display: block; margin-bottom: 7px; color: var(--ink-soft); font: 700 8px/1 var(--sans); letter-spacing: .09em; text-transform: uppercase; }
-.ai-connect-form > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+.ai-key-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+.ai-provider-fields { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(150px, .55fr); gap: 10px; margin-bottom: 13px; }
+.ai-provider-field { display: block; min-width: 0; }
+.ai-provider-field > span { display: block; margin-bottom: 7px; color: var(--ink-soft); font: 700 8px/1 var(--sans); letter-spacing: .09em; text-transform: uppercase; }
 .ai-connect-form input { min-width: 0; border: 1px solid var(--line-dark); border-right: 0; border-radius: 0; background: var(--paper-light); padding: 11px 12px; color: var(--ink); font: 500 11px/1 var(--mono); }
+.ai-provider-field input { width: 100%; border-right: 1px solid var(--line-dark); }
 .ai-connect-form button { border: 1px solid var(--ink); background: var(--ink); color: var(--paper-light); padding: 0 15px; font-size: 9px; cursor: pointer; }
 .ai-connect-form button:hover { background: var(--red); border-color: var(--red); }
 .ai-connect-form button:disabled { opacity: .45; cursor: default; }
 .ai-connect-form > small { display: block; margin-top: 8px; color: var(--muted); font: 400 8px/1.55 var(--sans); }
 .ai-connect-form > small code { color: var(--red); font-family: var(--mono); }
+.ai-connect-form > .ai-provider-disclosure { margin-top: 5px; padding-left: 10px; border-left: 2px solid var(--line-dark); }
 .ai-config-warning { margin-top: 20px; padding: 12px 13px; border-left: 2px solid var(--red); background: rgba(182,70,49,.06); color: var(--ink-soft); font: 400 10px/1.55 var(--sans); }
 .ai-config-warning code { color: var(--red); font-family: var(--mono); }
 .ai-connection-message { margin: 14px 0 0 !important; color: var(--red) !important; font: 500 10px/1.5 var(--sans) !important; }
@@ -518,7 +523,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .modal-sheet { padding: 30px 22px; }
   .provider-status-grid { grid-template-columns: 1fr; }
   .provider-heading { align-items: flex-start; }
-  .ai-connect-form > div { grid-template-columns: 1fr; gap: 8px; }
+  .ai-key-row, .ai-provider-fields { grid-template-columns: 1fr; gap: 8px; }
   .ai-connect-form input { border-right: 1px solid var(--line-dark); }
   .ai-connect-form button { min-height: 40px; }
   .ai-modal-actions { align-items: flex-end; }
