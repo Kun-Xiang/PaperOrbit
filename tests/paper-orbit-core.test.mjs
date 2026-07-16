@@ -16,6 +16,12 @@ import {
   rankPapersLocally,
   upsertPaperFeedback,
 } from "../app/api/arxiv/recommendation.ts";
+import {
+  claimLegacyStorage,
+  LEGACY_STORAGE,
+  LEGACY_STORAGE_CLAIM_KEY,
+  storageKeysFor,
+} from "../app/local-user-storage.ts";
 
 function params(query) {
   return parseArxivSearchParams(new URLSearchParams(query), 2027);
@@ -43,6 +49,63 @@ function paper(index, overrides = {}) {
 }
 
 const now = new Date("2026-07-16T00:00:00.000Z");
+
+function memoryStorage(entries = {}) {
+  const values = new Map(Object.entries(entries));
+  return {
+    getItem(key) {
+      return values.has(key) ? values.get(key) : null;
+    },
+    setItem(key, value) {
+      values.set(key, String(value));
+    },
+  };
+}
+
+test("local browser data is namespaced by normalized ChatGPT email", () => {
+  const alice = storageKeysFor(" Alice@Example.com ");
+  const bob = storageKeysFor("bob@example.com");
+  assert.equal(alice.saved, "paper-orbit:user:alice%40example.com:saved");
+  assert.notEqual(alice.saved, bob.saved);
+  assert.notEqual(alice.affinity, bob.affinity);
+  assert.match(alice.feedback, /paper-feedback-v1$/);
+});
+
+test("legacy local data can be claimed once by a privileged account", () => {
+  const local = memoryStorage({
+    [LEGACY_STORAGE.saved]: JSON.stringify(["2607.00001"]),
+    [LEGACY_STORAGE.interests]: JSON.stringify(["Robot Learning"]),
+  });
+  const reader = storageKeysFor("reader@example.com");
+  const owner = storageKeysFor("xiangk123@gmail.com");
+  const manager = storageKeysFor("xumiaojun49@gmail.com");
+
+  assert.equal(
+    claimLegacyStorage(local, reader, "reader@example.com", false),
+    false,
+  );
+  assert.equal(local.getItem(reader.saved), null);
+  assert.equal(local.getItem(LEGACY_STORAGE_CLAIM_KEY), null);
+
+  assert.equal(
+    claimLegacyStorage(local, owner, "XIANGK123@GMAIL.COM", true),
+    true,
+  );
+  assert.equal(
+    local.getItem(owner.saved),
+    JSON.stringify(["2607.00001"]),
+  );
+  assert.equal(
+    local.getItem(LEGACY_STORAGE_CLAIM_KEY),
+    "xiangk123@gmail.com",
+  );
+
+  assert.equal(
+    claimLegacyStorage(local, manager, "xumiaojun49@gmail.com", true),
+    false,
+  );
+  assert.equal(local.getItem(manager.saved), null);
+});
 
 test("search defaults to relevance with safe pagination defaults", () => {
   const parsed = params("q=robot+learning");

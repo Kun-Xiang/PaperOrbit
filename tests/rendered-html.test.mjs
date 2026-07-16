@@ -6,6 +6,7 @@ process.env.PAPER_ORBIT_SESSION_SECRET =
   "paper-orbit-test-session-secret-with-more-than-32-characters";
 process.env.OPENAI_MODEL = "gpt-5.6";
 delete process.env.OPENAI_API_KEY;
+delete process.env.SEMANTIC_SCHOLAR_API_KEY;
 
 async function request(path = "/", email = "xiangk123@gmail.com", init = {}) {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -84,7 +85,7 @@ test("server-renders the Paper Orbit product shell", async () => {
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Codex is working/i);
 });
 
-test("allows only the owner and manager ChatGPT accounts", async () => {
+test("allows every signed-in ChatGPT account while preserving privileged roles", async () => {
   const managerResponse = await request("/", "xumiaojun49@gmail.com");
   assert.equal(managerResponse.status, 200);
   const managerHtml = await managerResponse.text();
@@ -95,21 +96,68 @@ test("allows only the owner and manager ChatGPT accounts", async () => {
   const outsiderResponse = await request("/", "outsider@example.com");
   assert.equal(outsiderResponse.status, 200);
   const outsiderHtml = await outsiderResponse.text();
-  assert.match(outsiderHtml, /这个账号尚未获得访问权限/);
   assert.match(outsiderHtml, /outsider@example\.com/);
-  assert.doesNotMatch(outsiderHtml, /Paper Copilot/);
+  assert.match(outsiderHtml, /READER/);
+  assert.match(outsiderHtml, /Paper Copilot/);
+  assert.doesNotMatch(outsiderHtml, /这个账号尚未获得访问权限/);
 
   const anonymousApi = await request("/api/arxiv?mode=feed", null);
   assert.equal(anonymousApi.status, 401);
-  const outsiderApi = await request(
-    "/api/arxiv?mode=feed",
-    "outsider@example.com",
-  );
-  assert.equal(outsiderApi.status, 403);
 
-  const missingQuery = await request("/api/arxiv", "xiangk123@gmail.com");
+  const missingQuery = await request("/api/arxiv", "outsider@example.com");
   assert.equal(missingQuery.status, 400);
   assert.equal(missingQuery.headers.get("cache-control"), "private, no-store");
+});
+
+test("keeps shared provider credentials exclusive to owner and manager accounts", async () => {
+  process.env.OPENAI_API_KEY = "sk-test-shared-owner-key-not-for-readers";
+  process.env.SEMANTIC_SCHOLAR_API_KEY =
+    "semantic-scholar-test-shared-owner-key";
+
+  try {
+    const readerAiResponse = await request(
+      "/api/ai/session",
+      "reader@example.com",
+    );
+    assert.equal(readerAiResponse.status, 200);
+    const readerAi = await readerAiResponse.json();
+    assert.equal(readerAi.connected, false);
+    assert.equal(readerAi.source, null);
+
+    const ownerAiResponse = await request(
+      "/api/ai/session",
+      "xiangk123@gmail.com",
+    );
+    assert.equal(ownerAiResponse.status, 200);
+    const ownerAi = await ownerAiResponse.json();
+    assert.equal(ownerAi.connected, true);
+    assert.equal(ownerAi.source, "shared");
+
+    const readerResearchResponse = await request(
+      "/api/arxiv/session",
+      "reader@example.com",
+    );
+    assert.equal(readerResearchResponse.status, 200);
+    const readerResearch = await readerResearchResponse.json();
+    assert.deepEqual(readerResearch.arxiv, {
+      keyRequired: false,
+      source: "public",
+    });
+    assert.equal(readerResearch.semanticScholar.keyConnected, false);
+    assert.equal(readerResearch.semanticScholar.source, "public");
+
+    const managerResearchResponse = await request(
+      "/api/arxiv/session",
+      "xumiaojun49@gmail.com",
+    );
+    assert.equal(managerResearchResponse.status, 200);
+    const managerResearch = await managerResearchResponse.json();
+    assert.equal(managerResearch.semanticScholar.keyConnected, true);
+    assert.equal(managerResearch.semanticScholar.source, "shared");
+  } finally {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.SEMANTIC_SCHOLAR_API_KEY;
+  }
 });
 
 test("advanced arXiv search forwards safe structure and returns Atom pagination metadata", async () => {
@@ -205,6 +253,7 @@ test("feed returns a generic public candidate pool without consuming personal qu
       rankingVersion: "orbit-v3-local",
       candidateCount: 12,
       dailyLimit: 10,
+      metadataCredential: "public",
       personalization: "client",
       signals: [
         "interest",
@@ -219,6 +268,10 @@ test("feed returns a generic public candidate pool without consuming personal qu
   });
   assert.equal(calls.filter((call) => call.url.hostname === "export.arxiv.org").length, 1);
   assert.equal(calls.filter((call) => call.url.hostname === "api.semanticscholar.org").length, 1);
+  const semanticCall = calls.find(
+    (call) => call.url.hostname === "api.semanticscholar.org",
+  );
+  assert.equal(new Headers(semanticCall.init.headers).get("x-api-key"), null);
   const arxivUrl = calls.find((call) => call.url.hostname === "export.arxiv.org").url;
   assert.equal(arxivUrl.searchParams.get("max_results"), "60");
   assert.equal(arxivUrl.searchParams.get("sortBy"), "submittedDate");
@@ -275,6 +328,7 @@ test("keeps Copilot output in one language without copying the abstract", async 
 
 test("connects a private OpenAI session and sends only the validated arXiv PDF", async () => {
   const apiKey = "sk-test-paper-orbit-private-session-key";
+  const readerEmail = "reader@example.com";
   const upstreamCalls = [];
 
   await withMockedFetch(async (input, init = {}) => {
@@ -298,7 +352,7 @@ test("connects a private OpenAI session and sends only the validated arXiv PDF",
     }
     throw new Error(`Unexpected upstream request: ${url}`);
   }, async () => {
-    const connectResponse = await request("/api/ai/session", "xiangk123@gmail.com", {
+    const connectResponse = await request("/api/ai/session", readerEmail, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ apiKey }),
@@ -319,7 +373,7 @@ test("connects a private OpenAI session and sends only the validated arXiv PDF",
     assert.doesNotMatch(setCookie, /sk-test/);
     const cookie = setCookie.split(";")[0];
 
-    const statusResponse = await request("/api/ai/session", "xiangk123@gmail.com", {
+    const statusResponse = await request("/api/ai/session", readerEmail, {
       headers: { cookie },
     });
     assert.equal(statusResponse.status, 200);
@@ -350,7 +404,7 @@ test("connects a private OpenAI session and sends only the validated arXiv PDF",
       category: "cs.RO",
       tags: ["Physical AI"],
     };
-    const aiResponse = await request("/api/ai", "xiangk123@gmail.com", {
+    const aiResponse = await request("/api/ai", readerEmail, {
       method: "POST",
       headers: { "content-type": "application/json", cookie },
       body: JSON.stringify({
@@ -388,7 +442,7 @@ test("connects a private OpenAI session and sends only the validated arXiv PDF",
     assert.equal(payload.input[0].content[1].type, "input_text");
     assert.match(payload.input[0].content[1].text, /先概括研究问题/);
 
-    const invalidResponse = await request("/api/ai", "xiangk123@gmail.com", {
+    const invalidResponse = await request("/api/ai", readerEmail, {
       method: "POST",
       headers: { "content-type": "application/json", cookie },
       body: JSON.stringify({
@@ -401,7 +455,7 @@ test("connects a private OpenAI session and sends only the validated arXiv PDF",
     const invalid = await invalidResponse.json();
     assert.equal(invalid.code, "ARXIV_ID_REQUIRED");
 
-    const disconnectResponse = await request("/api/ai/session", "xiangk123@gmail.com", {
+    const disconnectResponse = await request("/api/ai/session", readerEmail, {
       method: "DELETE",
       headers: { cookie },
     });
@@ -410,14 +464,146 @@ test("connects a private OpenAI session and sends only the validated arXiv PDF",
   });
 });
 
+test("connects a reader-owned Semantic Scholar key for influence enrichment", async () => {
+  const apiKey = "semantic-scholar-test-private-reader-key";
+  const readerEmail = "reader@example.com";
+  const upstreamCalls = [];
+  const entries = [
+    { id: "2607.00001", title: "Reader-owned influence paper" },
+  ];
+
+  await withMockedFetch(async (input, init = {}) => {
+    const url = new URL(
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url,
+    );
+    upstreamCalls.push({ url, init });
+
+    if (
+      url.hostname === "api.semanticscholar.org"
+      && url.pathname.includes("/paper/ARXIV:1706.03762")
+    ) {
+      assert.equal(new Headers(init.headers).get("x-api-key"), apiKey);
+      return Response.json({ paperId: "204e3073870fae3d05bcbc2f6a8e263d9b72e776" });
+    }
+    if (url.hostname === "export.arxiv.org") {
+      return new Response(atomFeed(entries, { total: 1, limit: 60 }), {
+        headers: { "content-type": "application/atom+xml" },
+      });
+    }
+    if (
+      url.hostname === "api.semanticscholar.org"
+      && url.pathname.endsWith("/paper/batch")
+    ) {
+      assert.equal(new Headers(init.headers).get("x-api-key"), apiKey);
+      return Response.json([
+        {
+          externalIds: { ArXiv: "2607.00001" },
+          citationCount: 12,
+          influentialCitationCount: 3,
+        },
+      ]);
+    }
+    throw new Error(`Unexpected upstream request: ${url}`);
+  }, async () => {
+    const connectResponse = await request(
+      "/api/arxiv/session",
+      readerEmail,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ apiKey }),
+      },
+    );
+    assert.equal(connectResponse.status, 200);
+    const connect = await connectResponse.json();
+    assert.deepEqual(connect.arxiv, {
+      keyRequired: false,
+      source: "public",
+    });
+    assert.equal(connect.semanticScholar.keyConnected, true);
+    assert.equal(connect.semanticScholar.source, "session");
+    assert.doesNotMatch(JSON.stringify(connect), /private-reader-key/);
+
+    const setCookie = connectResponse.headers.get("set-cookie") ?? "";
+    assert.match(
+      setCookie,
+      /^paper_orbit_semantic_scholar_session=v1\./,
+    );
+    assert.match(setCookie, /Path=\/api\/arxiv/);
+    assert.match(setCookie, /HttpOnly/);
+    assert.match(setCookie, /SameSite=Strict/);
+    assert.match(setCookie, /Secure/);
+    assert.doesNotMatch(setCookie, /private-reader-key/);
+    const cookie = setCookie.split(";")[0];
+
+    const statusResponse = await request(
+      "/api/arxiv/session",
+      readerEmail,
+      { headers: { cookie } },
+    );
+    assert.equal(statusResponse.status, 200);
+    const status = await statusResponse.json();
+    assert.equal(status.semanticScholar.keyConnected, true);
+    assert.equal(status.semanticScholar.source, "session");
+
+    const otherAccountResponse = await request(
+      "/api/arxiv/session",
+      "other-reader@example.com",
+      { headers: { cookie } },
+    );
+    assert.equal(otherAccountResponse.status, 200);
+    const otherAccount = await otherAccountResponse.json();
+    assert.equal(otherAccount.semanticScholar.keyConnected, false);
+    assert.equal(otherAccount.semanticScholar.source, "public");
+
+    const feedResponse = await request(
+      "/api/arxiv?mode=feed",
+      readerEmail,
+      { headers: { cookie } },
+    );
+    assert.equal(feedResponse.status, 200);
+    const feed = await feedResponse.json();
+    assert.equal(feed.meta.metadataCredential, "session");
+    assert.equal(feed.source, "arxiv+semantic-scholar");
+    assert.equal(feed.papers[0].recommendation.citationCount, 12);
+
+    const disconnectResponse = await request(
+      "/api/arxiv/session",
+      readerEmail,
+      { method: "DELETE", headers: { cookie } },
+    );
+    assert.equal(disconnectResponse.status, 200);
+    const disconnect = await disconnectResponse.json();
+    assert.equal(disconnect.semanticScholar.source, "public");
+    assert.match(
+      disconnectResponse.headers.get("set-cookie") ?? "",
+      /Max-Age=0/,
+    );
+  });
+
+  assert.ok(
+    upstreamCalls.some(
+      (call) => call.url.pathname.endsWith("/paper/batch"),
+    ),
+  );
+});
+
 test("ships ten fallback papers and the local-first recommendation pipeline", async () => {
-  const [page, client, access, route, searchQuery, aiRoute, aiSession, sessionRoute, recommendation, layout, readme, envExample, hosting] = await Promise.all([
+  const [page, client, localUserStorage, access, route, searchQuery, researchSession, researchSessionRoute, aiRoute, encryptedSession, aiSession, sessionRoute, recommendation, layout, readme, envExample, hosting] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/paper-orbit-client.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/local-user-storage.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/access-control.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/arxiv/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/arxiv/search-query.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/arxiv/research-session.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/arxiv/session/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/ai/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/encrypted-session.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/ai/openai-session.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/ai/session/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/arxiv/recommendation.ts", import.meta.url), "utf8"),
@@ -429,17 +615,24 @@ test("ships ten fallback papers and the local-first recommendation pipeline", as
 
   assert.match(client, /const DAILY_PAPER_COUNT = 10/);
   assert.equal((client.match(/id: "2607\./g) ?? []).length, 10);
+  assert.match(localUserStorage, /paper-orbit:user:\$\{scope\}/);
+  assert.match(localUserStorage, /paper-orbit:legacy-storage-claim-v1/);
+  assert.match(localUserStorage, /if \(!canClaim\) return false/);
+  assert.match(client, /viewer\.role !== "reader"/);
   assert.match(recommendation, /paper-orbit:affinity-v3/);
   assert.match(recommendation, /paper-orbit:affinity-v2/);
   assert.match(recommendation, /paper-orbit:paper-feedback-v1/);
   assert.match(page, /requireChatGPTUser/);
   assert.match(access, /xiangk123@gmail\.com/);
   assert.match(access, /xumiaojun49@gmail\.com/);
+  assert.match(access, /role: access\?\.role \?\? "reader"/);
+  assert.doesNotMatch(access, /not authorized for Paper Orbit/);
   assert.match(route, /paperOrbitApiAccessError/);
   assert.match(route, /max_results", "60"/);
   assert.match(route, /api\.semanticscholar\.org\/graph\/v1\/paper\/batch/);
   assert.match(route, /dailyLimit: 10/);
   assert.match(route, /rankingVersion: "orbit-v3-local"/);
+  assert.match(route, /metadataCredential/);
   assert.match(route, /personalization: "client"/);
   assert.match(route, /"Cache-Control": "private, no-store"/);
   assert.doesNotMatch(
@@ -466,11 +659,17 @@ test("ships ten fallback papers and the local-first recommendation pipeline", as
   assert.match(aiRoute, /file_url: pdfUrl/);
   assert.match(aiRoute, /https:\/\/arxiv\.org\/pdf\//);
   assert.match(aiRoute, /fulltext-pdf/);
-  assert.match(aiSession, /AES-GCM/);
-  assert.match(aiSession, /HttpOnly/);
-  assert.match(aiSession, /SameSite=Strict/);
+  assert.match(encryptedSession, /AES-GCM/);
+  assert.match(encryptedSession, /HttpOnly/);
+  assert.match(encryptedSession, /SameSite=Strict/);
+  assert.match(aiSession, /isPaperOrbitPrivilegedEmail/);
   assert.match(sessionRoute, /api\.openai\.com\/v1\/models/);
-  assert.match(client, /连接你的 OpenAI API/);
+  assert.match(researchSession, /isPaperOrbitPrivilegedEmail/);
+  assert.match(researchSessionRoute, /api\.semanticscholar\.org/);
+  assert.match(researchSessionRoute, /x-api-key/);
+  assert.match(client, /连接你的研究服务/);
+  assert.match(client, /arXiv 公开 API/);
+  assert.match(client, /Semantic Scholar API Key/);
   assert.match(client, /PDF 全文/);
   assert.match(readme, /OpenAI Responses API/);
   assert.match(readme, /Orbit v3 Local/);

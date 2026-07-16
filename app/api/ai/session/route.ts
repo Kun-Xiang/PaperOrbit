@@ -7,6 +7,7 @@ import {
   openAISessionCookie,
   readOpenAISession,
   sealOpenAISession,
+  sharedOpenAICredential,
 } from "../openai-session";
 
 const NO_STORE_HEADERS = { "Cache-Control": "no-store" };
@@ -99,11 +100,12 @@ export async function POST(request: Request) {
 export async function DELETE(request: Request) {
   const accessError = await paperOrbitApiAccessError();
   if (accessError) return accessError;
+  const sharedCredential = sharedOpenAICredential(request);
   return json(
     {
-      connected: Boolean(process.env.OPENAI_API_KEY?.trim()),
-      source: process.env.OPENAI_API_KEY?.trim() ? "shared" : null,
-      model: process.env.OPENAI_API_KEY?.trim() ? openAIModel() : null,
+      connected: Boolean(sharedCredential),
+      source: sharedCredential?.source ?? null,
+      model: sharedCredential ? openAIModel() : null,
       sessionAvailable: openAISessionAvailable(),
     },
     { headers: { "Set-Cookie": clearOpenAISessionCookie(request) } },

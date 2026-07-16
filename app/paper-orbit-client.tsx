@@ -2,10 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AFFINITY_STORAGE_KEY,
   DEFAULT_PROJECT_ID,
-  FEEDBACK_STORAGE_KEY,
-  LEGACY_AFFINITY_STORAGE_KEY,
   adjustAffinityProfile,
   canonicalPaperId,
   loadAffinityProfile,
@@ -25,6 +22,10 @@ import type {
   ArxivSearchOrder,
   ArxivSearchSort,
 } from "./api/arxiv/search-query";
+import {
+  claimLegacyStorage,
+  storageKeysFor,
+} from "./local-user-storage";
 
 type View = "today" | "discover" | "library" | "reports";
 type AiMode = "openai" | "preview";
@@ -35,6 +36,18 @@ type AiConnection = {
   source: AiConnectionSource;
   model: string | null;
   sessionAvailable: boolean;
+};
+
+type ResearchConnection = {
+  arxiv: {
+    keyRequired: false;
+    source: "public";
+  };
+  semanticScholar: {
+    keyConnected: boolean;
+    source: "session" | "shared" | "public";
+    sessionAvailable: boolean;
+  };
 };
 
 type AiUsage = {
@@ -86,7 +99,7 @@ export type PaperOrbitViewer = {
   displayName: string;
   email: string;
   initials: string;
-  role: "owner" | "manager";
+  role: "owner" | "manager" | "reader";
 };
 
 type ChatMessage = {
@@ -110,6 +123,24 @@ const DEFAULT_INTERESTS = [
 ];
 
 const DAILY_PAPER_COUNT = 10;
+
+const VIEWER_ROLE_LABELS: Record<PaperOrbitViewer["role"], string> = {
+  owner: "OWNER",
+  manager: "MANAGER",
+  reader: "READER",
+};
+
+const DEFAULT_RESEARCH_CONNECTION: ResearchConnection = {
+  arxiv: {
+    keyRequired: false,
+    source: "public",
+  },
+  semanticScholar: {
+    keyConnected: false,
+    source: "public",
+    sessionAvailable: false,
+  },
+};
 
 const DEFAULT_SEARCH_FILTERS: SearchFilters = {
   field: "all",
@@ -319,18 +350,6 @@ const SEED_PAPERS: Paper[] = [
   },
 ];
 
-const STORAGE = {
-  saved: "paper-orbit:saved",
-  read: "paper-orbit:read",
-  reports: "paper-orbit:reports",
-  interests: "paper-orbit:interests",
-  affinity: AFFINITY_STORAGE_KEY,
-  legacyAffinity: LEGACY_AFFINITY_STORAGE_KEY,
-  feedback: FEEDBACK_STORAGE_KEY,
-  candidates: "paper-orbit:candidate-pool-v1",
-  refresh: "paper-orbit:last-refresh-v3",
-};
-
 function uniquePapers(...groups: Paper[][]) {
   const map = new Map<string, Paper>();
   groups.flat().forEach((paper) => {
@@ -363,6 +382,7 @@ export default function PaperOrbitClient({
 }: {
   viewer: PaperOrbitViewer;
 }) {
+  const storage = useMemo(() => storageKeysFor(viewer.email), [viewer.email]);
   const [activeView, setActiveView] = useState<View>("today");
   const [candidatePool, setCandidatePool] = useState<Paper[]>(SEED_PAPERS);
   const [searchResults, setSearchResults] = useState<Paper[]>([]);
@@ -403,6 +423,13 @@ export default function PaperOrbitClient({
   const [aiConnectionBusy, setAiConnectionBusy] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [aiConnectionMessage, setAiConnectionMessage] = useState("");
+  const [researchConnection, setResearchConnection] = useState<ResearchConnection>(
+    DEFAULT_RESEARCH_CONNECTION,
+  );
+  const [researchConnectionReady, setResearchConnectionReady] = useState(false);
+  const [researchConnectionBusy, setResearchConnectionBusy] = useState(false);
+  const [semanticScholarKeyInput, setSemanticScholarKeyInput] = useState("");
+  const [researchConnectionMessage, setResearchConnectionMessage] = useState("");
   const [lastAiRun, setLastAiRun] = useState<AiRunMeta | null>(null);
   const [chat, setChat] = useState<ChatMessage[]>([COPILOT_WELCOME]);
   const [activeReport, setActiveReport] = useState<ReadingReport | null>(null);
@@ -453,33 +480,39 @@ export default function PaperOrbitClient({
   const libraryPapers = allPapers.filter((paper) => savedIds.has(paper.id));
 
   useEffect(() => {
-    setSavedIds(new Set(safeParse<string[]>(localStorage.getItem(STORAGE.saved), [])));
-    setReadIds(new Set(safeParse<string[]>(localStorage.getItem(STORAGE.read), [])));
+    claimLegacyStorage(
+      localStorage,
+      storage,
+      viewer.email,
+      viewer.role !== "reader",
+    );
+    setSavedIds(new Set(safeParse<string[]>(localStorage.getItem(storage.saved), [])));
+    setReadIds(new Set(safeParse<string[]>(localStorage.getItem(storage.read), [])));
     setReports(
-      safeParse<ReadingReport[]>(localStorage.getItem(STORAGE.reports), []),
+      safeParse<ReadingReport[]>(localStorage.getItem(storage.reports), []),
     );
     const storedCandidates = safeParse<Paper[]>(
-      localStorage.getItem(STORAGE.candidates),
+      localStorage.getItem(storage.candidates),
       [],
     );
     if (storedCandidates.length) setCandidatePool(uniquePapers(storedCandidates));
     const storedInterests = safeParse<string[]>(
-      localStorage.getItem(STORAGE.interests),
+      localStorage.getItem(storage.interests),
       DEFAULT_INTERESTS,
     );
     const storedAffinity = loadAffinityProfile(
-      localStorage.getItem(STORAGE.affinity),
-      localStorage.getItem(STORAGE.legacyAffinity),
+      localStorage.getItem(storage.affinity),
+      localStorage.getItem(storage.legacyAffinity),
       new Date(),
     );
     setInterests(storedInterests);
     setAffinity(storedAffinity.profile);
     setPaperFeedback(
-      parseFeedbackStorage(localStorage.getItem(STORAGE.feedback)),
+      parseFeedbackStorage(localStorage.getItem(storage.feedback)),
     );
     if (storedAffinity.migrated) {
       localStorage.setItem(
-        STORAGE.affinity,
+        storage.affinity,
         JSON.stringify(storedAffinity.profile),
       );
     }
@@ -490,39 +523,40 @@ export default function PaperOrbitClient({
     const today = new Date().toISOString().slice(0, 10);
     if (
       !storedCandidates.length
-      || localStorage.getItem(STORAGE.refresh) !== today
+      || localStorage.getItem(storage.refresh) !== today
     ) {
       void refreshDaily(true);
     }
     void loadAiConnection();
+    void loadResearchConnection();
     // Bootstrap from browser storage exactly once; refreshDaily reads no personal state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     if (!ready) return;
-    localStorage.setItem(STORAGE.saved, JSON.stringify(Array.from(savedIds)));
-  }, [ready, savedIds]);
+    localStorage.setItem(storage.saved, JSON.stringify(Array.from(savedIds)));
+  }, [ready, savedIds, storage.saved]);
 
   useEffect(() => {
     if (!ready) return;
-    localStorage.setItem(STORAGE.read, JSON.stringify(Array.from(readIds)));
-  }, [ready, readIds]);
+    localStorage.setItem(storage.read, JSON.stringify(Array.from(readIds)));
+  }, [ready, readIds, storage.read]);
 
   useEffect(() => {
     if (!ready) return;
-    localStorage.setItem(STORAGE.reports, JSON.stringify(reports));
-  }, [ready, reports]);
+    localStorage.setItem(storage.reports, JSON.stringify(reports));
+  }, [ready, reports, storage.reports]);
 
   useEffect(() => {
     if (!ready) return;
-    localStorage.setItem(STORAGE.affinity, JSON.stringify(affinity));
-  }, [ready, affinity]);
+    localStorage.setItem(storage.affinity, JSON.stringify(affinity));
+  }, [affinity, ready, storage.affinity]);
 
   useEffect(() => {
     if (!ready) return;
-    localStorage.setItem(STORAGE.feedback, JSON.stringify(paperFeedback));
-  }, [ready, paperFeedback]);
+    localStorage.setItem(storage.feedback, JSON.stringify(paperFeedback));
+  }, [paperFeedback, ready, storage.feedback]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -569,24 +603,32 @@ export default function PaperOrbitClient({
       const data = (await response.json()) as {
         papers?: Paper[];
         source?: string;
-        meta?: { candidateCount?: number; rankingVersion?: string };
+        meta?: {
+          candidateCount?: number;
+          metadataCredential?: "session" | "shared" | "public";
+          rankingVersion?: string;
+        };
       };
       if (data.papers?.length) {
         const nextCandidates = uniquePapers(data.papers);
         setCandidatePool(nextCandidates);
         localStorage.setItem(
-          STORAGE.candidates,
+          storage.candidates,
           JSON.stringify(nextCandidates),
         );
         setRankingNow(Date.now());
         localStorage.setItem(
-          STORAGE.refresh,
+          storage.refresh,
           new Date().toISOString().slice(0, 10),
         );
         const candidateCount = data.meta?.candidateCount ?? data.papers.length;
-        const sourceLabel = data.source?.includes("semantic-scholar")
-          ? "影响力信号已校准"
-          : "arXiv 公开候选池";
+        const sourceLabel = data.meta?.metadataCredential === "session"
+          ? "个人影响力数据已校准"
+          : data.meta?.metadataCredential === "shared"
+            ? "站点影响力数据已校准"
+            : data.source?.includes("semantic-scholar")
+              ? "公开影响力信号已校准"
+              : "arXiv 公开候选池";
         setRefreshNote(
           `从 ${candidateCount} 篇候选中在本机精选 · ${sourceLabel}`,
         );
@@ -834,6 +876,96 @@ export default function PaperOrbitClient({
     }
   }
 
+  async function loadResearchConnection() {
+    try {
+      const response = await fetch("/api/arxiv/session", {
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      const data = (await response.json()) as ResearchConnection & {
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(data.error || "无法读取论文数据连接状态");
+      }
+      setResearchConnection(data);
+    } catch {
+      setResearchConnectionMessage("暂时无法读取论文数据连接状态。");
+    } finally {
+      setResearchConnectionReady(true);
+    }
+  }
+
+  async function connectSemanticScholar(event: FormEvent) {
+    event.preventDefault();
+    const apiKey = semanticScholarKeyInput.trim();
+    if (!apiKey || researchConnectionBusy) return;
+    setResearchConnectionBusy(true);
+    setResearchConnectionMessage("正在验证并建立加密论文数据会话…");
+    try {
+      const response = await fetch("/api/arxiv/session", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey }),
+      });
+      const data = (await response.json()) as ResearchConnection & {
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(data.error || "连接 Semantic Scholar 失败");
+      }
+      setResearchConnection(data);
+      setResearchConnectionMessage(
+        "已连接。刷新选刊时会使用你的 Semantic Scholar API 配额读取引用影响力信号。",
+      );
+      showToast("个人论文影响力数据已连接");
+      await refreshDaily(true);
+    } catch (error) {
+      setResearchConnectionMessage(
+        error instanceof Error
+          ? error.message
+          : "连接 Semantic Scholar 失败，请稍后重试。",
+      );
+    } finally {
+      setSemanticScholarKeyInput("");
+      setResearchConnectionBusy(false);
+    }
+  }
+
+  async function disconnectSemanticScholar() {
+    if (researchConnectionBusy) return;
+    setResearchConnectionBusy(true);
+    try {
+      const response = await fetch("/api/arxiv/session", {
+        method: "DELETE",
+        credentials: "same-origin",
+      });
+      const data = (await response.json()) as ResearchConnection & {
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(data.error || "断开论文数据连接失败");
+      }
+      setResearchConnection(data);
+      setResearchConnectionMessage(
+        data.semanticScholar.source === "shared"
+          ? "个人会话已清除；当前仅 OWNER/MANAGER 使用站点共享的论文元数据连接。"
+          : "个人 Semantic Scholar 会话已从此浏览器清除；arXiv 公开检索仍可继续使用。",
+      );
+      showToast("个人论文数据会话已断开");
+      await refreshDaily(true);
+    } catch (error) {
+      setResearchConnectionMessage(
+        error instanceof Error
+          ? error.message
+          : "断开论文数据连接失败，请稍后重试。",
+      );
+    } finally {
+      setResearchConnectionBusy(false);
+    }
+  }
+
   function selectCopilotPaper(id: string) {
     setCopilotPaperId(id);
     setChat([COPILOT_WELCOME]);
@@ -967,7 +1099,7 @@ export default function PaperOrbitClient({
   function saveInterests() {
     const next = draftInterests.length ? draftInterests : DEFAULT_INTERESTS;
     setInterests(next);
-    localStorage.setItem(STORAGE.interests, JSON.stringify(next));
+    localStorage.setItem(storage.interests, JSON.stringify(next));
     setSettingsOpen(false);
     setRankingNow(Date.now());
     showToast("兴趣画像已更新，本机推荐已重排");
@@ -1061,7 +1193,7 @@ export default function PaperOrbitClient({
               setSettingsOpen(true);
             }}
             aria-label={`编辑兴趣画像，当前用户 ${viewer.displayName}`}
-            title={`${viewer.email} · ${viewer.role === "owner" ? "OWNER" : "MANAGER"}`}
+            title={`${viewer.email} · ${VIEWER_ROLE_LABELS[viewer.role]}`}
           >
             {viewer.initials}
           </button>
@@ -1099,6 +1231,7 @@ export default function PaperOrbitClient({
             onAskAi={(question) => void askAI(question)}
             onOpenAiSettings={() => {
               setAiConnectionMessage("");
+              setResearchConnectionMessage("");
               setAiSettingsOpen(true);
             }}
             onDeepRead={() => void deepReadWithCopilot()}
@@ -1193,8 +1326,21 @@ export default function PaperOrbitClient({
                 <strong>{viewer.displayName}</strong>
                 <small>{viewer.email}</small>
               </div>
-              <b>{viewer.role === "owner" ? "OWNER" : "MANAGER"}</b>
-              <a href="/signout-with-chatgpt?return_to=%2F">切换账号</a>
+              <b>{VIEWER_ROLE_LABELS[viewer.role]}</b>
+              <div className="viewer-actions">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSettingsOpen(false);
+                    setAiConnectionMessage("");
+                    setResearchConnectionMessage("");
+                    setAiSettingsOpen(true);
+                  }}
+                >
+                  管理 API 连接
+                </button>
+                <a href="/signout-with-chatgpt?return_to=%2F">切换账号</a>
+              </div>
             </div>
             <div className="interest-grid">
               {INTEREST_OPTIONS.map((interest) => (
@@ -1271,75 +1417,183 @@ export default function PaperOrbitClient({
             <button className="modal-close" type="button" onClick={() => setAiSettingsOpen(false)} aria-label="关闭">
               ×
             </button>
-            <p className="eyebrow">FULL-TEXT AI / PRIVATE SESSION</p>
-            <h2 id="ai-connect-title">连接你的 OpenAI API</h2>
+            <p className="eyebrow">PERSONAL API CONNECTIONS / ENCRYPTED SESSION</p>
+            <h2 id="ai-connect-title">连接你的研究服务</h2>
             <p>
-              Paper Orbit 不能调用你的 ChatGPT 或 Codex 订阅额度。连接后，网页会把所选论文的 arXiv PDF 全文交给 OpenAI Responses API；费用计入这个 API Key 所属的 OpenAI Platform 账户。
+              每位 READER 使用自己的外部服务额度。OpenAI Key 用于 PDF 全文 Copilot；arXiv 公开检索不需要 Key；可选的 Semantic Scholar Key 用于更稳定地读取引用与高影响引用信号。
             </p>
 
-            <div className={`ai-connection-card ${aiConnection.connected ? "connected" : ""}`}>
-              <span aria-hidden="true">{aiConnection.connected ? "✓" : "○"}</span>
-              <div>
-                <strong>{aiConnection.connected ? "全文 AI 已连接" : "尚未连接真实 AI"}</strong>
-                <small>
-                  {aiConnection.connected
-                    ? `${aiConnection.model ?? "OpenAI"} · ${aiConnection.source === "session" ? "你的临时会话" : "站点共享连接"}`
-                    : "未连接时只提供不消耗 token 的摘要预览，并非模型对话。"}
-                </small>
-              </div>
-            </div>
-
-            {aiConnection.sessionAvailable ? (
-              <form className="ai-connect-form" onSubmit={connectOpenAI}>
-                <label htmlFor="openai-api-key">
-                  {aiConnection.source === "session" ? "更换个人 API Key" : "个人 OpenAI API Key"}
-                </label>
+            <section className="provider-section" aria-labelledby="openai-provider-title">
+              <div className="provider-heading">
                 <div>
-                  <input
-                    id="openai-api-key"
-                    type="password"
-                    value={apiKeyInput}
-                    onChange={(event) => setApiKeyInput(event.target.value)}
-                    placeholder="sk-…"
-                    autoComplete="off"
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    spellCheck={false}
-                    disabled={aiConnectionBusy}
-                  />
-                  <button type="submit" disabled={!apiKeyInput.trim() || aiConnectionBusy}>
-                    {aiConnectionBusy ? "连接中…" : aiConnection.source === "session" ? "验证并更换" : "验证并连接"}
-                  </button>
+                  <span>FULL-TEXT COPILOT</span>
+                  <h3 id="openai-provider-title">OpenAI API</h3>
                 </div>
-                <small>
-                  Key 只用于验证和调用 OpenAI，随后保存在服务端加密的 HttpOnly 浏览器会话中；不写入 localStorage、数据库或仓库，关闭浏览器或连接满 12 小时后失效。
-                </small>
-              </form>
-            ) : (
-              <div className="ai-config-warning">
-                服务器管理员还需要配置 <code>PAPER_ORBIT_SESSION_SECRET</code>，才能安全接收每位用户自己的 API Key。
+                <small>个人计费</small>
               </div>
-            )}
 
-            {aiConnectionMessage ? (
-              <p className="ai-connection-message" role="status">{aiConnectionMessage}</p>
-            ) : null}
+              <div className={`ai-connection-card ${aiConnection.connected ? "connected" : ""}`}>
+                <span aria-hidden="true">{aiConnection.connected ? "✓" : "○"}</span>
+                <div>
+                  <strong>{aiConnection.connected ? "全文 AI 已连接" : "尚未连接真实 AI"}</strong>
+                  <small>
+                    {aiConnection.connected
+                      ? `${aiConnection.model ?? "OpenAI"} · ${aiConnection.source === "session" ? "你的临时会话" : "仅管理账号的站点共享连接"}`
+                      : "普通用户未连接个人 Key 时只提供不消耗 token 的摘要预览。"}
+                  </small>
+                </div>
+              </div>
 
-            <div className="ai-connect-links">
-              <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer">
-                创建 OpenAI API Key ↗
-              </a>
-              <a href="https://platform.openai.com/settings/organization/billing/overview" target="_blank" rel="noreferrer">
-                查看 API 计费 ↗
-              </a>
-            </div>
+              {aiConnection.sessionAvailable ? (
+                <form className="ai-connect-form" onSubmit={connectOpenAI}>
+                  <label htmlFor="openai-api-key">
+                    {aiConnection.source === "session" ? "更换个人 API Key" : "个人 OpenAI API Key"}
+                  </label>
+                  <div>
+                    <input
+                      id="openai-api-key"
+                      type="password"
+                      value={apiKeyInput}
+                      onChange={(event) => setApiKeyInput(event.target.value)}
+                      placeholder="sk-…"
+                      autoComplete="off"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      disabled={aiConnectionBusy}
+                    />
+                    <button type="submit" disabled={!apiKeyInput.trim() || aiConnectionBusy}>
+                      {aiConnectionBusy ? "连接中…" : aiConnection.source === "session" ? "验证并更换" : "验证并连接"}
+                    </button>
+                  </div>
+                  <small>
+                    Key 只用于验证和调用 OpenAI，随后保存在服务端加密的 HttpOnly 浏览器会话中；不写入 localStorage、数据库或仓库，关闭浏览器或连接满 12 小时后失效。
+                  </small>
+                </form>
+              ) : (
+                <div className="ai-config-warning">
+                  服务器管理员还需要配置 <code>PAPER_ORBIT_SESSION_SECRET</code>，才能安全接收每位用户自己的 API Key。
+                </div>
+              )}
 
-            <div className="modal-actions ai-modal-actions">
+              {aiConnectionMessage ? (
+                <p className="ai-connection-message" role="status">{aiConnectionMessage}</p>
+              ) : null}
+
+              <div className="ai-connect-links">
+                <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer">
+                  创建 OpenAI API Key ↗
+                </a>
+                <a href="https://platform.openai.com/settings/organization/billing/overview" target="_blank" rel="noreferrer">
+                  查看 API 计费 ↗
+                </a>
+              </div>
+
               {aiConnection.source === "session" ? (
-                <button className="text-button" type="button" onClick={() => void disconnectOpenAI()} disabled={aiConnectionBusy}>
-                  清除个人会话
+                <button className="provider-disconnect" type="button" onClick={() => void disconnectOpenAI()} disabled={aiConnectionBusy}>
+                  清除个人 OpenAI 会话
                 </button>
               ) : null}
+            </section>
+
+            <section className="provider-section" aria-labelledby="paper-data-provider-title">
+              <div className="provider-heading">
+                <div>
+                  <span>PAPER DISCOVERY &amp; IMPACT</span>
+                  <h3 id="paper-data-provider-title">论文数据 API</h3>
+                </div>
+                <small>按用户隔离</small>
+              </div>
+
+              <div className="provider-status-grid">
+                <div className="provider-status connected">
+                  <span aria-hidden="true">✓</span>
+                  <div>
+                    <strong>arXiv 公开 API</strong>
+                    <small>检索、分类、日期与 PDF 地址 · 无需也不存在个人 API Key</small>
+                  </div>
+                </div>
+                <div className={`provider-status ${researchConnection.semanticScholar.keyConnected ? "connected" : ""}`}>
+                  <span aria-hidden="true">{researchConnection.semanticScholar.keyConnected ? "✓" : "○"}</span>
+                  <div>
+                    <strong>
+                      {researchConnection.semanticScholar.keyConnected
+                        ? "Semantic Scholar Key 已连接"
+                        : "Semantic Scholar 公开额度"}
+                    </strong>
+                    <small>
+                      {!researchConnectionReady
+                        ? "正在检查连接状态…"
+                        : researchConnection.semanticScholar.source === "session"
+                          ? "你的临时会话 · 引用与高影响引用"
+                          : researchConnection.semanticScholar.source === "shared"
+                            ? "仅管理账号的站点共享连接"
+                            : "无需 Key 也可使用，但高峰期可能受共享限流影响"}
+                    </small>
+                  </div>
+                </div>
+              </div>
+
+              {researchConnection.semanticScholar.sessionAvailable ? (
+                <form className="ai-connect-form" onSubmit={connectSemanticScholar}>
+                  <label htmlFor="semantic-scholar-api-key">
+                    {researchConnection.semanticScholar.source === "session"
+                      ? "更换个人 Semantic Scholar API Key"
+                      : "个人 Semantic Scholar API Key（可选）"}
+                  </label>
+                  <div>
+                    <input
+                      id="semantic-scholar-api-key"
+                      type="password"
+                      value={semanticScholarKeyInput}
+                      onChange={(event) => setSemanticScholarKeyInput(event.target.value)}
+                      placeholder="Semantic Scholar API Key"
+                      autoComplete="off"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      disabled={researchConnectionBusy}
+                    />
+                    <button type="submit" disabled={!semanticScholarKeyInput.trim() || researchConnectionBusy}>
+                      {researchConnectionBusy
+                        ? "连接中…"
+                        : researchConnection.semanticScholar.source === "session"
+                          ? "验证并更换"
+                          : "验证并连接"}
+                    </button>
+                  </div>
+                  <small>
+                    Key 仅由 Paper Orbit 后端发送到 Semantic Scholar 的 <code>x-api-key</code> 请求头，并使用与 OpenAI Key 相同的加密会话边界。
+                  </small>
+                </form>
+              ) : (
+                <div className="ai-config-warning">
+                  服务器管理员还需要配置 <code>PAPER_ORBIT_SESSION_SECRET</code>，才能安全接收个人论文数据 Key。
+                </div>
+              )}
+
+              {researchConnectionMessage ? (
+                <p className="ai-connection-message" role="status">{researchConnectionMessage}</p>
+              ) : null}
+
+              <div className="ai-connect-links">
+                <a href="https://info.arxiv.org/help/api/user-manual.html" target="_blank" rel="noreferrer">
+                  arXiv API 说明 ↗
+                </a>
+                <a href="https://www.semanticscholar.org/product/api" target="_blank" rel="noreferrer">
+                  申请 Semantic Scholar API Key ↗
+                </a>
+              </div>
+
+              {researchConnection.semanticScholar.source === "session" ? (
+                <button className="provider-disconnect" type="button" onClick={() => void disconnectSemanticScholar()} disabled={researchConnectionBusy}>
+                  清除个人论文数据会话
+                </button>
+              ) : null}
+            </section>
+
+            <div className="modal-actions ai-modal-actions">
+              <span>所有个人 Key 均绑定当前 ChatGPT 登录邮箱，并在 12 小时后失效。</span>
               <button className="primary-button" type="button" onClick={() => setAiSettingsOpen(false)}>
                 完成
               </button>

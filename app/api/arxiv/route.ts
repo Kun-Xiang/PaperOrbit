@@ -13,6 +13,7 @@ import {
   buildArxivSearchQuery,
   parseArxivSearchParams,
 } from "./search-query";
+import { semanticScholarCredential } from "./research-session";
 
 const PRIVATE_NO_STORE_HEADERS = {
   "Cache-Control": "private, no-store",
@@ -137,7 +138,10 @@ function parseFeed(xml: string, requestedStart: number, requestedLimit: number) 
   };
 }
 
-async function getInfluenceSignals(papers: CandidatePaper[]) {
+async function getInfluenceSignals(
+  papers: CandidatePaper[],
+  apiKey?: string,
+) {
   const signals = new Map<string, InfluenceSignal>();
   if (!papers.length) return signals;
 
@@ -154,9 +158,7 @@ async function getInfluenceSignals(papers: CandidatePaper[]) {
       "Content-Type": "application/json",
       "User-Agent": "PaperOrbit/3.0 (personal research reading app)",
     };
-    if (process.env.SEMANTIC_SCHOLAR_API_KEY) {
-      headers["x-api-key"] = process.env.SEMANTIC_SCHOLAR_API_KEY;
-    }
+    if (apiKey) headers["x-api-key"] = apiKey;
     const response = await fetch(endpoint, {
       method: "POST",
       headers,
@@ -247,7 +249,11 @@ export async function GET(request: Request) {
       endpoint.searchParams.set("sortOrder", "descending");
 
       const parsed = parseFeed(await arxivRequest(endpoint), 0, 60);
-      const canonicalInfluence = await getInfluenceSignals(parsed.papers);
+      const metadataCredential = await semanticScholarCredential(request);
+      const canonicalInfluence = await getInfluenceSignals(
+        parsed.papers,
+        metadataCredential?.apiKey,
+      );
       const influence = influenceForRanking(parsed.papers, canonicalInfluence);
       const papers: RecommendedPaper[] = scoreWithoutReordering(
         parsed.papers,
@@ -265,6 +271,7 @@ export async function GET(request: Request) {
           rankingVersion: "orbit-v3-local",
           candidateCount: papers.length,
           dailyLimit: 10,
+          metadataCredential: metadataCredential?.source ?? "public",
           personalization: "client",
           signals: [
             "interest",
