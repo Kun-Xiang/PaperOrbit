@@ -7,6 +7,13 @@ import {
   requestSubject,
   sealEncryptedSession,
 } from "../encrypted-session";
+import {
+  DEFAULT_OPENAI_BASE_URL,
+  DEFAULT_OPENAI_MODEL,
+  cleanOpenAIApiKey,
+  cleanOpenAIModel,
+  normalizeOpenAIBaseUrl,
+} from "./provider-config";
 
 const SESSION_COOKIE = "paper_orbit_openai_session";
 const SESSION_SCOPE = "openai-session";
@@ -14,17 +21,24 @@ const SESSION_PATH = "/api/ai";
 
 type StoredOpenAISession = {
   apiKey: string;
+  baseUrl?: string;
+  model?: string;
 };
 
 export type OpenAICredential = {
   apiKey: string;
+  baseUrl: string;
+  model: string;
   source: "session" | "shared";
 };
 
 function isStoredOpenAISession(value: unknown): value is StoredOpenAISession {
   if (!value || typeof value !== "object") return false;
-  const apiKey = (value as { apiKey?: unknown }).apiKey;
-  return typeof apiKey === "string" && apiKey.length >= 20;
+  const session = value as { apiKey?: unknown; baseUrl?: unknown; model?: unknown };
+  if (!cleanOpenAIApiKey(session.apiKey)) return false;
+  if (session.baseUrl !== undefined && !normalizeOpenAIBaseUrl(session.baseUrl)) return false;
+  if (session.model !== undefined && !cleanOpenAIModel(session.model)) return false;
+  return true;
 }
 
 export function openAISessionAvailable() {
@@ -32,14 +46,17 @@ export function openAISessionAvailable() {
 }
 
 export function openAIModel() {
-  return process.env.OPENAI_MODEL?.trim() || "gpt-5.6";
+  return cleanOpenAIModel(process.env.OPENAI_MODEL) || DEFAULT_OPENAI_MODEL;
 }
 
-export async function sealOpenAISession(request: Request, apiKey: string) {
+export async function sealOpenAISession(
+  request: Request,
+  credential: Pick<OpenAICredential, "apiKey" | "baseUrl" | "model">,
+) {
   return sealEncryptedSession<StoredOpenAISession>(
     request,
     SESSION_SCOPE,
-    { apiKey },
+    credential,
   );
 }
 
@@ -53,6 +70,8 @@ export async function readOpenAISession(request: Request) {
   if (!session) return null;
   return {
     apiKey: session.data.apiKey,
+    baseUrl: normalizeOpenAIBaseUrl(session.data.baseUrl) ?? DEFAULT_OPENAI_BASE_URL,
+    model: cleanOpenAIModel(session.data.model) || openAIModel(),
     connectedAt: session.connectedAt,
     subject: session.subject,
   };
@@ -63,14 +82,28 @@ export function sharedOpenAICredential(
 ): OpenAICredential | null {
   if (!isPaperOrbitPrivilegedEmail(requestSubject(request))) return null;
   const sharedKey = process.env.OPENAI_API_KEY?.trim();
-  return sharedKey ? { apiKey: sharedKey, source: "shared" } : null;
+  return sharedKey
+    ? {
+        apiKey: sharedKey,
+        baseUrl: DEFAULT_OPENAI_BASE_URL,
+        model: openAIModel(),
+        source: "shared",
+      }
+    : null;
 }
 
 export async function openAICredential(
   request: Request,
 ): Promise<OpenAICredential | null> {
   const session = await readOpenAISession(request);
-  if (session) return { apiKey: session.apiKey, source: "session" };
+  if (session) {
+    return {
+      apiKey: session.apiKey,
+      baseUrl: session.baseUrl,
+      model: session.model,
+      source: "session",
+    };
+  }
   return sharedOpenAICredential(request);
 }
 

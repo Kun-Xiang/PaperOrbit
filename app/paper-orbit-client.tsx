@@ -23,6 +23,10 @@ import type {
   ArxivSearchSort,
 } from "./api/arxiv/search-query";
 import {
+  DEFAULT_OPENAI_BASE_URL,
+  DEFAULT_OPENAI_MODEL,
+} from "./api/ai/provider-config";
+import {
   claimLegacyStorage,
   storageKeysFor,
 } from "./local-user-storage";
@@ -34,6 +38,7 @@ type AiConnectionSource = "session" | "shared" | null;
 type AiConnection = {
   connected: boolean;
   source: AiConnectionSource;
+  baseUrl: string | null;
   model: string | null;
   sessionAvailable: boolean;
 };
@@ -163,8 +168,18 @@ const FEEDBACK_LABELS: Record<FeedbackKind, string> = {
 
 const COPILOT_WELCOME: ChatMessage = {
   role: "assistant",
-  text: "连接 OpenAI 后，我会直接阅读所选论文的 arXiv PDF 全文。你可以问核心机制、公式、图表、实验或复现风险。",
+  text: "连接支持 Responses 与 PDF 输入的 AI 服务后，我会直接阅读所选论文的 arXiv PDF 全文。你可以问核心机制、公式、图表、实验或复现风险。",
 };
+
+function aiProviderLabel(baseUrl: string | null) {
+  if (!baseUrl) return "AI 服务";
+  try {
+    const hostname = new URL(baseUrl).hostname;
+    return hostname === "api.openai.com" ? "OpenAI 官方" : hostname;
+  } catch {
+    return "AI 服务";
+  }
+}
 
 const INTEREST_OPTIONS = [
   "Physical AI",
@@ -416,11 +431,14 @@ export default function PaperOrbitClient({
   const [aiConnection, setAiConnection] = useState<AiConnection>({
     connected: false,
     source: null,
+    baseUrl: null,
     model: null,
     sessionAvailable: false,
   });
   const [aiConnectionReady, setAiConnectionReady] = useState(false);
   const [aiConnectionBusy, setAiConnectionBusy] = useState(false);
+  const [apiBaseUrlInput, setApiBaseUrlInput] = useState(DEFAULT_OPENAI_BASE_URL);
+  const [apiModelInput, setApiModelInput] = useState(DEFAULT_OPENAI_MODEL);
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [aiConnectionMessage, setAiConnectionMessage] = useState("");
   const [researchConnection, setResearchConnection] = useState<ResearchConnection>(
@@ -813,6 +831,8 @@ export default function PaperOrbitClient({
       const data = (await response.json()) as AiConnection & { error?: string };
       if (!response.ok) throw new Error(data.error || "无法读取 AI 连接状态");
       setAiConnection(data);
+      setApiBaseUrlInput(data.baseUrl ?? DEFAULT_OPENAI_BASE_URL);
+      setApiModelInput(data.model ?? DEFAULT_OPENAI_MODEL);
       setAiMode(data.connected ? "openai" : "preview");
     } catch {
       setAiConnectionMessage("暂时无法读取 AI 连接状态。");
@@ -824,25 +844,29 @@ export default function PaperOrbitClient({
   async function connectOpenAI(event: FormEvent) {
     event.preventDefault();
     const apiKey = apiKeyInput.trim();
-    if (!apiKey || aiConnectionBusy) return;
+    const baseUrl = apiBaseUrlInput.trim();
+    const model = apiModelInput.trim();
+    if (!apiKey || !baseUrl || !model || aiConnectionBusy) return;
     setAiConnectionBusy(true);
-    setAiConnectionMessage("正在验证并建立加密会话…");
+    setAiConnectionMessage("正在验证兼容接口并建立加密会话…");
     try {
       const response = await fetch("/api/ai/session", {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey }),
+        body: JSON.stringify({ apiKey, baseUrl, model }),
       });
       const data = (await response.json()) as AiConnection & { error?: string };
-      if (!response.ok) throw new Error(data.error || "连接 OpenAI 失败");
+      if (!response.ok) throw new Error(data.error || "连接 AI 服务失败");
       setAiConnection(data);
+      setApiBaseUrlInput(data.baseUrl ?? baseUrl);
+      setApiModelInput(data.model ?? model);
       setAiMode("openai");
-      setAiConnectionMessage("已连接。之后的提问会读取 arXiv PDF 全文并计入你的 OpenAI API 用量。");
-      showToast("OpenAI 全文 Copilot 已连接");
+      setAiConnectionMessage(`已连接 ${aiProviderLabel(data.baseUrl)}。之后的提问会把 arXiv PDF 交给该服务，并计入你的 API 用量。`);
+      showToast("全文 Copilot AI 服务已连接");
     } catch (error) {
       setAiConnectionMessage(
-        error instanceof Error ? error.message : "连接 OpenAI 失败，请稍后重试。",
+        error instanceof Error ? error.message : "连接 AI 服务失败，请稍后重试。",
       );
     } finally {
       setApiKeyInput("");
@@ -861,12 +885,14 @@ export default function PaperOrbitClient({
       const data = (await response.json()) as AiConnection & { error?: string };
       if (!response.ok) throw new Error(data.error || "断开连接失败");
       setAiConnection(data);
+      setApiBaseUrlInput(data.baseUrl ?? DEFAULT_OPENAI_BASE_URL);
+      setApiModelInput(data.model ?? DEFAULT_OPENAI_MODEL);
       setAiMode(data.connected ? "openai" : "preview");
       setLastAiRun(null);
       setAiConnectionMessage(
-        data.connected ? "个人会话已清除；当前仍使用站点配置的共享 OpenAI 连接。" : "个人 OpenAI 会话已从此浏览器清除。",
+        data.connected ? "个人会话已清除；当前仍使用站点配置的共享 OpenAI 连接。" : "个人 AI 服务会话已从此浏览器清除。",
       );
-      showToast("个人 OpenAI 会话已断开");
+      showToast("个人 AI 服务会话已断开");
     } catch (error) {
       setAiConnectionMessage(
         error instanceof Error ? error.message : "断开连接失败，请稍后重试。",
@@ -1420,14 +1446,14 @@ export default function PaperOrbitClient({
             <p className="eyebrow">PERSONAL API CONNECTIONS / ENCRYPTED SESSION</p>
             <h2 id="ai-connect-title">连接你的研究服务</h2>
             <p>
-              每位 READER 使用自己的外部服务额度。OpenAI Key 用于 PDF 全文 Copilot；arXiv 公开检索不需要 Key；可选的 Semantic Scholar Key 用于更稳定地读取引用与高影响引用信号。
+              每位 READER 使用自己的外部服务额度。OpenAI 或兼容服务用于 PDF 全文 Copilot；arXiv 公开检索不需要 Key；可选的 Semantic Scholar Key 用于更稳定地读取引用与高影响引用信号。
             </p>
 
             <section className="provider-section" aria-labelledby="openai-provider-title">
               <div className="provider-heading">
                 <div>
                   <span>FULL-TEXT COPILOT</span>
-                  <h3 id="openai-provider-title">OpenAI API</h3>
+                  <h3 id="openai-provider-title">OpenAI 兼容 API</h3>
                 </div>
                 <small>个人计费</small>
               </div>
@@ -1438,7 +1464,7 @@ export default function PaperOrbitClient({
                   <strong>{aiConnection.connected ? "全文 AI 已连接" : "尚未连接真实 AI"}</strong>
                   <small>
                     {aiConnection.connected
-                      ? `${aiConnection.model ?? "OpenAI"} · ${aiConnection.source === "session" ? "你的临时会话" : "仅管理账号的站点共享连接"}`
+                      ? `${aiConnection.model ?? "未命名模型"} · ${aiProviderLabel(aiConnection.baseUrl)} · ${aiConnection.source === "session" ? "你的临时会话" : "仅管理账号的站点共享连接"}`
                       : "普通用户未连接个人 Key 时只提供不消耗 token 的摘要预览。"}
                   </small>
                 </div>
@@ -1446,33 +1472,76 @@ export default function PaperOrbitClient({
 
               {aiConnection.sessionAvailable ? (
                 <form className="ai-connect-form" onSubmit={connectOpenAI}>
+                  <div className="ai-provider-fields">
+                    <label className="ai-provider-field" htmlFor="openai-base-url">
+                      <span>API Base URL</span>
+                      <input
+                        id="openai-base-url"
+                        type="url"
+                        value={apiBaseUrlInput}
+                        onChange={(event) => setApiBaseUrlInput(event.target.value)}
+                        placeholder="https://api.openai.com/v1"
+                        autoComplete="url"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        disabled={aiConnectionBusy}
+                      />
+                    </label>
+                    <label className="ai-provider-field" htmlFor="openai-model">
+                      <span>模型 ID</span>
+                      <input
+                        id="openai-model"
+                        type="text"
+                        value={apiModelInput}
+                        onChange={(event) => setApiModelInput(event.target.value)}
+                        placeholder="gpt-5.6"
+                        autoComplete="off"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        disabled={aiConnectionBusy}
+                      />
+                    </label>
+                  </div>
                   <label htmlFor="openai-api-key">
-                    {aiConnection.source === "session" ? "更换个人 API Key" : "个人 OpenAI API Key"}
+                    {aiConnection.source === "session" ? "重新输入 API Key 以更换连接" : "个人 API Key"}
                   </label>
-                  <div>
+                  <div className="ai-key-row">
                     <input
                       id="openai-api-key"
                       type="password"
                       value={apiKeyInput}
                       onChange={(event) => setApiKeyInput(event.target.value)}
-                      placeholder="sk-…"
+                      placeholder="你的 API Key（不限 sk- 前缀）"
                       autoComplete="off"
                       autoCapitalize="none"
                       autoCorrect="off"
                       spellCheck={false}
                       disabled={aiConnectionBusy}
                     />
-                    <button type="submit" disabled={!apiKeyInput.trim() || aiConnectionBusy}>
+                    <button
+                      type="submit"
+                      disabled={
+                        !apiKeyInput.trim()
+                        || !apiBaseUrlInput.trim()
+                        || !apiModelInput.trim()
+                        || aiConnectionBusy
+                      }
+                    >
                       {aiConnectionBusy ? "连接中…" : aiConnection.source === "session" ? "验证并更换" : "验证并连接"}
                     </button>
                   </div>
                   <small>
-                    Key 只用于验证和调用 OpenAI，随后保存在服务端加密的 HttpOnly 浏览器会话中；不写入 localStorage、数据库或仓库，关闭浏览器或连接满 12 小时后失效。
+                    Base URL、模型和 Key 会一起保存在服务端加密的 HttpOnly 浏览器会话中；不写入 localStorage、数据库或仓库，关闭浏览器或连接满 12 小时后失效。地址必须是公网 HTTPS API 根路径。
+                  </small>
+                  <small className="ai-provider-disclosure">
+                    兼容服务必须提供 <code>/models</code>、<code>/responses</code> 与 PDF <code>input_file</code>。提问时，该服务会收到论文 PDF 地址、你的问题、论文元数据和最近对话；请只连接你信任的服务商。
                   </small>
                 </form>
               ) : (
                 <div className="ai-config-warning">
-                  服务器管理员还需要配置 <code>PAPER_ORBIT_SESSION_SECRET</code>，才能安全接收每位用户自己的 API Key。
+                  服务器管理员还需要配置 <code>PAPER_ORBIT_SESSION_SECRET</code>，才能安全接收每位用户自己的 API 连接。
                 </div>
               )}
 
@@ -1491,7 +1560,7 @@ export default function PaperOrbitClient({
 
               {aiConnection.source === "session" ? (
                 <button className="provider-disconnect" type="button" onClick={() => void disconnectOpenAI()} disabled={aiConnectionBusy}>
-                  清除个人 OpenAI 会话
+                  清除个人 AI 服务会话
                 </button>
               ) : null}
             </section>
@@ -1541,7 +1610,7 @@ export default function PaperOrbitClient({
                       ? "更换个人 Semantic Scholar API Key"
                       : "个人 Semantic Scholar API Key（可选）"}
                   </label>
-                  <div>
+                  <div className="ai-key-row">
                     <input
                       id="semantic-scholar-api-key"
                       type="password"
@@ -1908,8 +1977,8 @@ function TodayView(props: TodayViewProps) {
             <button className="ai-connection-button" type="button" onClick={props.onOpenAiSettings}>
               <span aria-hidden="true">{props.aiConnection.connected ? "●" : "○"}</span>
               {props.aiConnection.connected
-                ? `${props.aiConnection.source === "session" ? "个人 OpenAI 已连接" : "共享 OpenAI 已连接"} · 管理`
-                : "连接 OpenAI · 启用 PDF 全文阅读"}
+                ? `${props.aiConnection.source === "session" ? "个人 AI 已连接" : "共享 OpenAI 已连接"} · 管理`
+                : "连接 AI 服务 · 启用 PDF 全文阅读"}
             </button>
 
             <label className="paper-select-label" htmlFor="copilot-paper">

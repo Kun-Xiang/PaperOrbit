@@ -1,5 +1,6 @@
 import { paperOrbitApiAccessError } from "../../access-control";
-import { openAICredential, openAIModel } from "./openai-session";
+import { type OpenAICredential, openAICredential } from "./openai-session";
+import { DEFAULT_OPENAI_BASE_URL, openAIProviderEndpoint } from "./provider-config";
 
 type PaperInput = {
   id?: string;
@@ -352,19 +353,20 @@ function violatesOutputPolicy(answer: string, source: string, language: OutputLa
 }
 
 async function requestOpenAI(
-  apiKey: string,
+  credential: OpenAICredential,
   instructions: string,
   input: unknown,
   maxOutputTokens: number,
 ) {
-  const response = await fetch("https://api.openai.com/v1/responses", {
+  const response = await fetch(openAIProviderEndpoint(credential.baseUrl, "responses"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
+      Authorization: `Bearer ${credential.apiKey}`,
     },
+    redirect: "error",
     body: JSON.stringify({
-      model: openAIModel(),
+      model: credential.model,
       instructions,
       input,
       max_output_tokens: maxOutputTokens,
@@ -467,7 +469,7 @@ export async function POST(request: Request) {
     const source = clean(paper.summary, 6000);
     const maxOutputTokens = action === "report" ? 2200 : 1100;
     let result = await requestOpenAI(
-      credential.apiKey,
+      credential,
       responseInstructions(action, language),
       fullTextInput(
         arxivPdfUrl(arxivId),
@@ -481,7 +483,7 @@ export async function POST(request: Request) {
 
     if (violatesOutputPolicy(result.answer, source, language)) {
       const repair = await requestOpenAI(
-        credential.apiKey,
+        credential,
         repairInstructions(language),
         `<source_abstract>\n${source}\n</source_abstract>\n\n<draft>\n${result.answer}\n</draft>`,
         maxOutputTokens,
@@ -494,7 +496,7 @@ export async function POST(request: Request) {
           answer: previewAnswer(action, paper, prompt, language),
           mode: "preview",
           source: "abstract-preview",
-          model: openAIModel(),
+          model: credential.model,
           fallback: "output-policy",
           usage,
         });
@@ -505,7 +507,8 @@ export async function POST(request: Request) {
       answer: result.answer,
       mode: "openai",
       source: "fulltext-pdf",
-      model: openAIModel(),
+      model: credential.model,
+      provider: credential.baseUrl === DEFAULT_OPENAI_BASE_URL ? "openai" : "compatible",
       credentialSource: credential.source,
       pdfDetail: detail,
       repaired,
@@ -513,34 +516,43 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     if (error instanceof OpenAIRequestError) {
-      if (error.status === 401) {
+      if (error.status === 401 || error.status === 403) {
         return json(
-          { error: "OpenAI API Key 无效或已撤销，请重新连接。", code: "OPENAI_KEY_INVALID" },
+          { error: "API Key 无效、已撤销，或无权访问所选模型，请重新连接。", code: "OPENAI_KEY_INVALID" },
           { status: 401 },
         );
       }
       if (error.status === 429) {
         return json(
-          { error: "OpenAI API 额度不足或请求过快，请检查用量后重试。", code: "OPENAI_QUOTA_UNAVAILABLE" },
+          { error: "AI 服务额度不足或请求过快，请检查该服务的用量后重试。", code: "OPENAI_QUOTA_UNAVAILABLE" },
           { status: 429 },
         );
       }
       if (error.status === 413) {
         return json(
-          { error: "这篇论文 PDF 超出了 OpenAI 的文件大小限制。", code: "PDF_TOO_LARGE" },
+          { error: "这篇论文 PDF 超出了所连接 AI 服务的文件大小限制。", code: "PDF_TOO_LARGE" },
           { status: 422 },
+        );
+      }
+      if ([400, 404, 405, 422].includes(error.status)) {
+        return json(
+          {
+            error: "所连接的 AI 服务拒绝了 Responses/PDF 请求；请检查 Base URL、模型 ID，以及该服务是否支持 PDF input_file。",
+            code: "OPENAI_PROVIDER_INCOMPATIBLE",
+          },
+          { status: 502 },
         );
       }
       return json(
         {
-          error: "OpenAI 无法读取这篇 arXiv PDF 全文，请确认论文可访问后重试。",
+          error: "所连接的 AI 服务无法读取这篇 arXiv PDF 全文，请确认论文和服务可访问后重试。",
           code: "FULLTEXT_REQUEST_FAILED",
         },
         { status: 502 },
       );
     }
     return json(
-      { error: "AI 全文分析暂时不可用，请稍后重试。", code: "AI_UNAVAILABLE" },
+      { error: "所连接的 AI 服务暂时不可用，请稍后重试。", code: "AI_UNAVAILABLE" },
       { status: 502 },
     );
   }
