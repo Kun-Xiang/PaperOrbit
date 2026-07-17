@@ -1,6 +1,16 @@
 import { paperOrbitApiAccessError } from "../../access-control";
 import { type OpenAICredential, openAICredential } from "./openai-session";
-import { DEFAULT_OPENAI_BASE_URL, openAIProviderEndpoint } from "./provider-config";
+import {
+  ArxivPdfError,
+  type ArxivPdfProbe,
+  type OpenAIUsage,
+  ProviderCallError,
+  type ProviderCallResult,
+  probeArxivPdf,
+  providerErrorMentions,
+  requestProviderResponse,
+} from "./copilot-transport";
+import { DEFAULT_OPENAI_BASE_URL } from "./provider-config";
 
 type PaperInput = {
   id?: string;
@@ -19,26 +29,20 @@ type ChatHistoryItem = {
   text: string;
 };
 
-type OpenAIUsage = {
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
-};
-
 type PdfDetail = "low" | "high";
-
-class OpenAIRequestError extends Error {
-  status: number;
-
-  constructor(status: number) {
-    super(`OpenAI returned ${status}`);
-    this.status = status;
-  }
-}
 
 function json(body: unknown, init: ResponseInit = {}) {
   const headers = new Headers(init.headers);
   headers.set("Cache-Control", "no-store");
+  if (body && typeof body === "object") {
+    const diagnostic = (body as { diagnostic?: unknown }).diagnostic;
+    if (diagnostic && typeof diagnostic === "object") {
+      const id = (diagnostic as { id?: unknown }).id;
+      if (typeof id === "string" && id) {
+        headers.set("X-Paper-Orbit-Diagnostic-Id", id);
+      }
+    }
+  }
   return Response.json(body, { ...init, headers });
 }
 
@@ -180,24 +184,6 @@ Use this paper as a case study in how ${topic} turns representations into testab
     return `优先做能隔离核心机制的最小实验：固定数据集、骨干、训练日程和推理预算，只替换论文提出的关键组件，再增加一个分布外测试。它比先复现完整榜单更能判断论文主张是否成立。`;
   }
   return `基于当前元数据，最稳妥的分析方式是区分三层：摘要明确声称了什么、如果主张成立可以推出什么、哪些结论仍需正文证据。针对${topic}，应优先核对匹配消融、资源控制和失败案例。当前是摘要辅助模式，因此我不会直接复述或逐句翻译原摘要。`;
-}
-
-function extractOutputText(payload: unknown) {
-  if (!payload || typeof payload !== "object") return "";
-  const data = payload as { output_text?: unknown; output?: unknown };
-  if (typeof data.output_text === "string") return data.output_text.trim();
-  if (!Array.isArray(data.output)) return "";
-  for (const item of data.output) {
-    if (!item || typeof item !== "object") continue;
-    const content = (item as { content?: unknown }).content;
-    if (!Array.isArray(content)) continue;
-    for (const part of content) {
-      if (part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string") {
-        return (part as { text: string }).text.trim();
-      }
-    }
-  }
-  return "";
 }
 
 function responseInstructions(action: string, language: OutputLanguage) {
@@ -352,53 +338,6 @@ function violatesOutputPolicy(answer: string, source: string, language: OutputLa
   );
 }
 
-async function requestOpenAI(
-  credential: OpenAICredential,
-  instructions: string,
-  input: unknown,
-  maxOutputTokens: number,
-) {
-  const response = await fetch(openAIProviderEndpoint(credential.baseUrl, "responses"), {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${credential.apiKey}`,
-    },
-    redirect: "error",
-    body: JSON.stringify({
-      model: credential.model,
-      instructions,
-      input,
-      max_output_tokens: maxOutputTokens,
-      store: false,
-    }),
-  });
-  if (!response.ok) throw new OpenAIRequestError(response.status);
-  const payload = await response.json();
-  const answer = extractOutputText(payload);
-  if (!answer) throw new Error("OpenAI returned no text");
-  return { answer, usage: extractUsage(payload) };
-}
-
-function extractUsage(payload: unknown): OpenAIUsage | null {
-  if (!payload || typeof payload !== "object") return null;
-  const usage = (payload as { usage?: unknown }).usage;
-  if (!usage || typeof usage !== "object") return null;
-  const data = usage as {
-    input_tokens?: unknown;
-    output_tokens?: unknown;
-    total_tokens?: unknown;
-  };
-  const number = (value: unknown) =>
-    typeof value === "number" && Number.isFinite(value) && value >= 0
-      ? Math.round(value)
-      : 0;
-  const inputTokens = number(data.input_tokens);
-  const outputTokens = number(data.output_tokens);
-  const totalTokens = number(data.total_tokens) || inputTokens + outputTokens;
-  return { inputTokens, outputTokens, totalTokens };
-}
-
 function mergeUsage(left: OpenAIUsage | null, right: OpenAIUsage | null) {
   if (!left) return right;
   if (!right) return left;
@@ -407,6 +346,132 @@ function mergeUsage(left: OpenAIUsage | null, right: OpenAIUsage | null) {
     outputTokens: left.outputTokens + right.outputTokens,
     totalTokens: left.totalTokens + right.totalTokens,
   };
+}
+
+type ProviderResultWithAttempts = ProviderCallResult & { attempts: number };
+
+type ProviderTextProbe = {
+  status: "passed" | "failed" | "not-run";
+  providerStatus: number | null;
+  requestId: string | null;
+  elapsedMs: number | null;
+};
+
+function newDiagnosticId() {
+  return `po-${globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+}
+
+function publicArxivProbe(probe: ArxivPdfProbe | null) {
+  return probe
+    ? {
+        available: true,
+        status: probe.status,
+        contentType: probe.contentType,
+        bytes: probe.bytes,
+        elapsedMs: probe.elapsedMs,
+      }
+    : undefined;
+}
+
+function shouldFastRetry(error: ProviderCallError) {
+  return error.elapsedMs < 8_000
+    && (
+      error.status === null
+      || [408, 502, 503, 504].includes(error.status)
+    );
+}
+
+function streamModeRejected(error: ProviderCallError) {
+  return [400, 405, 422].includes(error.status ?? 0)
+    && providerErrorMentions(error, /stream|event[-_ ]?stream|sse/i);
+}
+
+async function requestOpenAI(
+  credential: OpenAICredential,
+  instructions: string,
+  input: unknown,
+  maxOutputTokens: number,
+  options: {
+    phase: "fulltext" | "repair";
+    diagnosticId: string;
+    allowFastRetry?: boolean;
+  },
+): Promise<ProviderResultWithAttempts> {
+  let preferStreaming = credential.baseUrl !== DEFAULT_OPENAI_BASE_URL;
+  let attempts = 0;
+
+  while (attempts < 2) {
+    attempts += 1;
+    try {
+      const result = await requestProviderResponse(credential, {
+        instructions,
+        input,
+        maxOutputTokens,
+        phase: options.phase,
+        preferStreaming,
+        diagnosticId: `${options.diagnosticId}-a${attempts}`,
+        timeoutMs: options.phase === "fulltext" ? 240_000 : 90_000,
+      });
+      return { ...result, attempts };
+    } catch (error) {
+      if (!(error instanceof ProviderCallError)) throw error;
+      error.attempts = attempts;
+      if (attempts === 1 && preferStreaming && streamModeRejected(error)) {
+        // The connection probe already proved non-streaming JSON works. If a
+        // compatible service explicitly rejects streaming, fall back without
+        // treating that rejected request as a model run.
+        preferStreaming = false;
+        continue;
+      }
+      if (attempts === 1 && options.allowFastRetry && shouldFastRetry(error)) {
+        // Retry only fast gateway failures. A slow failed PDF run may already
+        // have consumed input tokens, so silently repeating it would be unsafe.
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw new Error("Provider retry loop exited unexpectedly");
+}
+
+async function probeProviderText(
+  credential: OpenAICredential,
+  diagnosticId: string,
+): Promise<ProviderTextProbe> {
+  try {
+    const result = await requestProviderResponse(credential, {
+      instructions: "Return only the requested marker.",
+      input: "Reply with exactly PAPER_ORBIT_DIAGNOSTIC_OK.",
+      maxOutputTokens: 16,
+      phase: "diagnostic",
+      preferStreaming: false,
+      diagnosticId: `${diagnosticId}-health`,
+      timeoutMs: 20_000,
+    });
+    return {
+      status: "passed",
+      providerStatus: 200,
+      requestId: result.requestId,
+      elapsedMs: result.elapsedMs,
+    };
+  } catch (error) {
+    if (error instanceof ProviderCallError) {
+      return {
+        status: "failed",
+        providerStatus: error.status,
+        requestId: error.requestId,
+        elapsedMs: error.elapsedMs,
+      };
+    }
+    return {
+      status: "failed",
+      providerStatus: null,
+      requestId: null,
+      elapsedMs: null,
+    };
+  }
 }
 
 function fullTextInput(pdfUrl: string, detail: PdfDetail, text: string) {
@@ -427,9 +492,147 @@ function repairInstructions(language: OutputLanguage) {
     : `You are an academic-analysis editor. Rewrite the draft in coherent English while preserving its evidence boundaries. Remove Chinese explanatory passages, do not reproduce any complete source sentence or twelve consecutive source words, and add no new facts. Output only the revised answer.`;
 }
 
+function shouldProbeAfterFailure(error: ProviderCallError) {
+  return error.phase === "fulltext"
+    && (
+      error.status === null
+      || (error.status >= 500 && error.status <= 599)
+      || error.kind === "timeout"
+      || error.kind === "network"
+      || error.kind === "stream-error"
+    );
+}
+
+function classifyProviderFailure(error: ProviderCallError, textProbe: ProviderTextProbe) {
+  const arxivConfirmed = "PaperOrbit 已单独确认 arXiv PDF 当前可读取。";
+  const textState = textProbe.status === "passed"
+    ? "AI 服务的极小文本探针同时通过，因此故障只发生在本次全文处理链路。"
+    : textProbe.status === "failed"
+      ? "随后执行的极小文本探针也失败，因此当前 AI 服务或其上游不可用。"
+      : "";
+
+  if (error.status === 401 || error.status === 403) {
+    return {
+      code: "OPENAI_KEY_INVALID",
+      category: "authentication",
+      status: 401,
+      retryable: false,
+      message: "API Key 已失效、被撤销，或无权访问所选模型；请在研究服务中重新连接。",
+    };
+  }
+  if (error.status === 429) {
+    return {
+      code: "OPENAI_QUOTA_UNAVAILABLE",
+      category: "quota",
+      status: 429,
+      retryable: true,
+      message: "AI 服务额度不足或请求过快；arXiv PDF 没有故障，请检查服务用量或稍后重试。",
+    };
+  }
+  if (
+    error.status === 413
+    || providerErrorMentions(error, /context[_ -]?length|too large|file[_ -]?size|max(?:imum)?[_ -]?(?:tokens|bytes)/i)
+  ) {
+    return {
+      code: "PDF_TOO_LARGE",
+      category: "provider-pdf",
+      status: 422,
+      retryable: false,
+      message: `这篇 PDF 超出了所连接模型服务的文件或上下文限制。${arxivConfirmed}`,
+    };
+  }
+  if (error.kind === "timeout" || [408, 504].includes(error.status ?? 0) || providerErrorMentions(error, /timed?[_ -]?out|timeout/i)) {
+    return {
+      code: "PROVIDER_FULLTEXT_TIMEOUT",
+      category: "provider",
+      status: 504,
+      retryable: true,
+      message: `AI 服务在处理全文时超时。${arxivConfirmed}${textState}`,
+    };
+  }
+  if (
+    providerErrorMentions(error, /input[_ -]?file|file[_ -]?url|pdf|unsupported[_ -]?file|download(?:ing)?[_ -]?(?:file|url)/i)
+  ) {
+    return {
+      code: "PROVIDER_PDF_INPUT_UNSUPPORTED",
+      category: "provider-pdf",
+      status: 502,
+      retryable: false,
+      message: `所连接服务拒绝了 Responses PDF input_file；它的纯文本 Responses 能力与 PDF 全文能力并不等价。${arxivConfirmed}`,
+    };
+  }
+  if (providerErrorMentions(error, /model[_ -]?(?:not[_ -]?found|invalid)|unknown[_ -]?model|does not exist/i)) {
+    return {
+      code: "PROVIDER_MODEL_INVALID",
+      category: "compatibility",
+      status: 502,
+      retryable: false,
+      message: "所选模型 ID 不存在，或该 Key 无权调用它；请重新检查模型 ID。",
+    };
+  }
+  if ([404, 405].includes(error.status ?? 0)) {
+    return {
+      code: "PROVIDER_RESPONSES_UNSUPPORTED",
+      category: "compatibility",
+      status: 502,
+      retryable: false,
+      message: "所连接地址没有可用的 Responses /responses 接口，或该接口不接受当前请求。",
+    };
+  }
+  if (error.kind === "too-large") {
+    return {
+      code: "PROVIDER_RESPONSE_TOO_LARGE",
+      category: "compatibility",
+      status: 502,
+      retryable: false,
+      message: "AI 服务返回了异常大的响应，PaperOrbit 已中止读取以保护服务稳定性。",
+    };
+  }
+  if (error.kind === "format" || error.kind === "empty") {
+    return {
+      code: "PROVIDER_RESPONSE_INVALID",
+      category: "compatibility",
+      status: 502,
+      retryable: false,
+      message: error.kind === "empty"
+        ? "AI 服务返回成功状态，但没有可读取的 Responses 文本内容。"
+        : "AI 服务返回的既不是标准 Responses JSON，也不是可解析的 Responses SSE。",
+    };
+  }
+  if ([400, 422].includes(error.status ?? 0)) {
+    return {
+      code: "PROVIDER_REQUEST_REJECTED",
+      category: "compatibility",
+      status: 502,
+      retryable: false,
+      message: `AI 服务拒绝了全文请求；Base URL 和纯文本验证可以通过，但当前模型未接受这份 Responses/PDF 请求。${arxivConfirmed}`,
+    };
+  }
+  if (textProbe.status === "passed") {
+    return {
+      code: "PROVIDER_FULLTEXT_FAILED",
+      category: "provider",
+      status: 502,
+      retryable: true,
+      message: `本次全文处理在 AI 上游失败。${arxivConfirmed}${textState}`,
+    };
+  }
+  return {
+    code: "PROVIDER_UNAVAILABLE",
+    category: "provider",
+    status: 502,
+    retryable: true,
+    message: `AI 服务或其上游当前不可用。${arxivConfirmed}${textState}`,
+  };
+}
+
 export async function POST(request: Request) {
   const accessError = await paperOrbitApiAccessError();
   if (accessError) return accessError;
+
+  const diagnosticId = newDiagnosticId();
+  let credential: OpenAICredential | null = null;
+  let arxivProbe: ArxivPdfProbe | null = null;
 
   try {
     const body = (await request.json()) as {
@@ -446,7 +649,7 @@ export async function POST(request: Request) {
     }
 
     const language = outputLanguage(action, prompt);
-    const credential = await openAICredential(request);
+    credential = await openAICredential(request);
     if (!credential) {
       return json({
         answer: previewAnswer(action, paper, prompt, language),
@@ -459,7 +662,16 @@ export async function POST(request: Request) {
     const arxivId = normalizedArxivId(paper.id);
     if (!arxivId) {
       return json(
-        { error: "全文 Copilot 需要有效的 arXiv ID。", code: "ARXIV_ID_REQUIRED" },
+        {
+          error: "全文 Copilot 需要有效的 arXiv ID。",
+          code: "ARXIV_ID_REQUIRED",
+          diagnostic: {
+            id: diagnosticId,
+            category: "request",
+            stage: "validate-arxiv-id",
+            retryable: false,
+          },
+        },
         { status: 400 },
       );
     }
@@ -468,29 +680,69 @@ export async function POST(request: Request) {
     const history = cleanHistory(body.history);
     const source = clean(paper.summary, 6000);
     const maxOutputTokens = action === "report" ? 2200 : 1100;
-    let result = await requestOpenAI(
+    const pdfUrl = arxivPdfUrl(arxivId);
+    arxivProbe = await probeArxivPdf(pdfUrl);
+    const fulltextRun = await requestOpenAI(
       credential,
       responseInstructions(action, language),
       fullTextInput(
-        arxivPdfUrl(arxivId),
+        pdfUrl,
         detail,
         buildModelInput(action, paper, prompt, history),
       ),
       maxOutputTokens,
+      {
+        phase: "fulltext",
+        diagnosticId,
+        allowFastRetry: true,
+      },
     );
+    let result = fulltextRun;
     let usage = result.usage;
     let repaired = false;
 
     if (violatesOutputPolicy(result.answer, source, language)) {
-      const repair = await requestOpenAI(
-        credential,
-        repairInstructions(language),
-        `<source_abstract>\n${source}\n</source_abstract>\n\n<draft>\n${result.answer}\n</draft>`,
-        maxOutputTokens,
-      );
-      result = repair;
-      usage = mergeUsage(usage, repair.usage);
-      repaired = true;
+      try {
+        const repair = await requestOpenAI(
+          credential,
+          repairInstructions(language),
+          `<source_abstract>\n${source}\n</source_abstract>\n\n<draft>\n${result.answer}\n</draft>`,
+          maxOutputTokens,
+          {
+            phase: "repair",
+            diagnosticId,
+          },
+        );
+        result = repair;
+        usage = mergeUsage(usage, repair.usage);
+        repaired = true;
+      } catch (error) {
+        if (!(error instanceof ProviderCallError)) throw error;
+        return json({
+          answer: previewAnswer(action, paper, prompt, language),
+          mode: "preview",
+          source: "abstract-preview",
+          model: credential.model,
+          fallback: "repair-unavailable",
+          usage,
+          diagnostic: {
+            id: diagnosticId,
+            category: "quality-repair",
+            stage: "repair",
+            retryable: true,
+            arxiv: publicArxivProbe(arxivProbe),
+            provider: {
+              reachable: true,
+              status: error.status,
+              requestId: error.requestId,
+              transport: error.transport,
+              elapsedMs: error.elapsedMs,
+              attempts: error.attempts,
+              textProbe: "not-run",
+            },
+          },
+        });
+      }
       if (violatesOutputPolicy(result.answer, source, language)) {
         return json({
           answer: previewAnswer(action, paper, prompt, language),
@@ -499,6 +751,22 @@ export async function POST(request: Request) {
           model: credential.model,
           fallback: "output-policy",
           usage,
+          diagnostic: {
+            id: diagnosticId,
+            category: "quality-policy",
+            stage: "quality-check",
+            retryable: false,
+            arxiv: publicArxivProbe(arxivProbe),
+            provider: {
+              reachable: true,
+              status: 200,
+              requestId: fulltextRun.requestId,
+              transport: fulltextRun.transport,
+              elapsedMs: fulltextRun.elapsedMs,
+              attempts: fulltextRun.attempts,
+              textProbe: "not-run",
+            },
+          },
         });
       }
     }
@@ -513,46 +781,165 @@ export async function POST(request: Request) {
       pdfDetail: detail,
       repaired,
       usage,
+      diagnostic: {
+        id: diagnosticId,
+        category: "success",
+        stage: "completed",
+        retryable: false,
+        arxiv: publicArxivProbe(arxivProbe),
+        provider: {
+          reachable: true,
+          status: 200,
+          requestId: fulltextRun.requestId,
+          transport: fulltextRun.transport,
+          elapsedMs: fulltextRun.elapsedMs,
+          attempts: fulltextRun.attempts,
+          textProbe: "not-run",
+        },
+      },
     });
   } catch (error) {
-    if (error instanceof OpenAIRequestError) {
-      if (error.status === 401 || error.status === 403) {
-        return json(
-          { error: "API Key 无效、已撤销，或无权访问所选模型，请重新连接。", code: "OPENAI_KEY_INVALID" },
-          { status: 401 },
-        );
-      }
-      if (error.status === 429) {
-        return json(
-          { error: "AI 服务额度不足或请求过快，请检查该服务的用量后重试。", code: "OPENAI_QUOTA_UNAVAILABLE" },
-          { status: 429 },
-        );
-      }
-      if (error.status === 413) {
-        return json(
-          { error: "这篇论文 PDF 超出了所连接 AI 服务的文件大小限制。", code: "PDF_TOO_LARGE" },
-          { status: 422 },
-        );
-      }
-      if ([400, 404, 405, 422].includes(error.status)) {
-        return json(
-          {
-            error: "所连接的 AI 服务拒绝了 Responses/PDF 请求；请检查 Base URL、模型 ID，以及该服务是否支持 PDF input_file。",
-            code: "OPENAI_PROVIDER_INCOMPATIBLE",
-          },
-          { status: 502 },
-        );
-      }
+    if (error instanceof ArxivPdfError) {
+      const failure = error.kind === "not-found"
+        ? {
+            code: "ARXIV_PDF_NOT_FOUND",
+            status: 404,
+            message: "arXiv 当前没有返回这篇论文的 PDF；AI 服务尚未收到全文请求。",
+          }
+        : error.kind === "rate-limited"
+          ? {
+              code: "ARXIV_RATE_LIMITED",
+              status: 503,
+              message: "arXiv 当前触发限流；AI 服务尚未收到全文请求，请稍后重试。",
+            }
+          : error.kind === "too-large"
+            ? {
+                code: "ARXIV_PDF_TOO_LARGE",
+                status: 422,
+                message: "这篇 arXiv PDF 超过 PaperOrbit 的 50 MB 安全上限，尚未交给 AI 服务。",
+              }
+            : error.kind === "size-unknown"
+              ? {
+                  code: "ARXIV_PDF_UNVERIFIABLE",
+                  status: 502,
+                  message: "PaperOrbit 无法确认这篇 arXiv PDF 的完整大小，因此未把文件交给 AI 服务。",
+                }
+            : error.kind === "invalid-pdf"
+              ? {
+                  code: "ARXIV_PDF_INVALID",
+                  status: 422,
+                  message: "arXiv 返回的内容不是可验证的 PDF；AI 服务尚未收到全文请求。",
+                }
+              : error.kind === "timeout"
+                ? {
+                    code: "ARXIV_PDF_TIMEOUT",
+                    status: 504,
+                    message: "PaperOrbit 连接 arXiv PDF 时超时；本次尚未调用 AI 模型。",
+                  }
+                : {
+                    code: "ARXIV_PDF_UNAVAILABLE",
+                    status: 502,
+                    message: "PaperOrbit 当前无法从 arXiv 取得 PDF；本次尚未调用 AI 模型。",
+                  };
+      console.warn("[PaperOrbit Copilot]", {
+        diagnosticId,
+        category: "arxiv",
+        code: failure.code,
+        status: error.status,
+        elapsedMs: error.elapsedMs,
+      });
       return json(
         {
-          error: "所连接的 AI 服务无法读取这篇 arXiv PDF 全文，请确认论文和服务可访问后重试。",
-          code: "FULLTEXT_REQUEST_FAILED",
+          error: failure.message,
+          code: failure.code,
+          diagnostic: {
+            id: diagnosticId,
+            category: "arxiv",
+            stage: "arxiv-pdf",
+            retryable: error.retryable,
+            arxiv: {
+              available: false,
+              status: error.status,
+              contentType: null,
+              bytes: null,
+              elapsedMs: error.elapsedMs,
+            },
+          },
         },
-        { status: 502 },
+        { status: failure.status },
       );
     }
+    if (error instanceof ProviderCallError) {
+      const textProbe = credential && shouldProbeAfterFailure(error)
+        ? await probeProviderText(credential, diagnosticId)
+        : {
+            status: "not-run" as const,
+            providerStatus: null,
+            requestId: null,
+            elapsedMs: null,
+          };
+      const failure = classifyProviderFailure(error, textProbe);
+      console.warn("[PaperOrbit Copilot]", {
+        diagnosticId,
+        category: failure.category,
+        code: failure.code,
+        phase: error.phase,
+        providerStatus: error.status,
+        providerRequestId: error.requestId,
+        transport: error.transport,
+        elapsedMs: error.elapsedMs,
+        attempts: error.attempts,
+        textProbe: textProbe.status,
+        arxivAvailable: Boolean(arxivProbe),
+      });
+      return json(
+        {
+          error: failure.message,
+          code: failure.code,
+          diagnostic: {
+            id: diagnosticId,
+            category: failure.category,
+            stage: error.phase === "fulltext" ? "provider-fulltext" : error.phase,
+            retryable: failure.retryable,
+            arxiv: publicArxivProbe(arxivProbe),
+            provider: {
+              reachable: textProbe.status === "passed"
+                ? true
+                : textProbe.status === "failed"
+                  ? false
+                  : null,
+              status: error.status,
+              requestId: error.requestId,
+              transport: error.transport,
+              elapsedMs: error.elapsedMs,
+              attempts: error.attempts,
+              textProbe: textProbe.status,
+              textProbeStatus: textProbe.providerStatus,
+              textProbeRequestId: textProbe.requestId,
+              textProbeElapsedMs: textProbe.elapsedMs,
+            },
+          },
+        },
+        { status: failure.status },
+      );
+    }
+    console.error("[PaperOrbit Copilot]", {
+      diagnosticId,
+      category: "internal",
+      errorName: error instanceof Error ? error.name : "unknown",
+    });
     return json(
-      { error: "所连接的 AI 服务暂时不可用，请稍后重试。", code: "AI_UNAVAILABLE" },
+      {
+        error: `PaperOrbit 在处理请求时出现内部错误；请使用诊断号 ${diagnosticId} 排查。`,
+        code: "COPILOT_INTERNAL_ERROR",
+        diagnostic: {
+          id: diagnosticId,
+          category: "internal",
+          stage: "paper-orbit",
+          retryable: true,
+          arxiv: publicArxivProbe(arxivProbe),
+        },
+      },
       { status: 502 },
     );
   }

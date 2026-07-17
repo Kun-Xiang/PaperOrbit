@@ -7,8 +7,17 @@ process.env.PAPER_ORBIT_SESSION_SECRET =
 process.env.OPENAI_MODEL = "gpt-5.6";
 delete process.env.OPENAI_API_KEY;
 delete process.env.SEMANTIC_SCHOLAR_API_KEY;
+delete process.env.PAPER_ORBIT_LOCAL_MODE;
+delete process.env.PAPER_ORBIT_LOCAL_REQUEST_TOKEN;
+delete process.env.PAPER_ORBIT_LOCAL_USER_EMAIL;
+delete process.env.PAPER_ORBIT_LOCAL_USER_NAME;
 
-async function request(path = "/", email = "xiangk123@gmail.com", init = {}) {
+async function request(
+  path = "/",
+  email = "xiangk123@gmail.com",
+  init = {},
+  origin = "https://paper-orbit.test",
+) {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set(
     "test",
@@ -19,9 +28,14 @@ async function request(path = "/", email = "xiangk123@gmail.com", init = {}) {
   const requestHeaders = new Headers(init.headers);
   if (!requestHeaders.has("accept")) requestHeaders.set("accept", "text/html");
   if (email) requestHeaders.set("oai-authenticated-user-email", email);
+  const originUrl = new URL(origin);
+  if (!requestHeaders.has("host")) requestHeaders.set("host", originUrl.host);
+  if (!requestHeaders.has("x-forwarded-proto")) {
+    requestHeaders.set("x-forwarded-proto", originUrl.protocol.slice(0, -1));
+  }
 
   return worker.fetch(
-    new Request(`https://paper-orbit.test${path}`, {
+    new Request(`${origin}${path}`, {
       ...init,
       headers: requestHeaders,
     }),
@@ -45,6 +59,63 @@ async function withMockedFetch(mock, callback) {
   } finally {
     globalThis.fetch = originalFetch;
   }
+}
+
+function requestPayload(init = {}) {
+  return typeof init.body === "string" ? JSON.parse(init.body) : null;
+}
+
+function isConnectionProbe(init = {}) {
+  const payload = requestPayload(init);
+  return JSON.stringify(payload?.input ?? "").includes("PAPER_ORBIT_OK");
+}
+
+function isRuntimeDiagnosticProbe(init = {}) {
+  const payload = requestPayload(init);
+  return JSON.stringify(payload?.input ?? "").includes("PAPER_ORBIT_DIAGNOSTIC_OK");
+}
+
+function arxivPdfHeadResponse(bytes = 11_000_071) {
+  return new Response(null, {
+    status: 200,
+    headers: {
+      "content-type": "application/pdf",
+      "content-length": String(bytes),
+    },
+  });
+}
+
+function arxivPdfRangeResponse(
+  bytes = 11_000_071,
+  signature = "%PDF-1.7",
+  headers = {},
+) {
+  return new Response(signature, {
+    status: 206,
+    headers: {
+      "content-type": "application/pdf",
+      "content-length": "8",
+      "content-range": `bytes 0-7/${bytes}`,
+      ...headers,
+    },
+  });
+}
+
+function declaredOversizedJsonResponse(bytes, onCancel) {
+  const body = new ReadableStream({
+    pull(controller) {
+      controller.enqueue(new TextEncoder().encode('{"data":['));
+    },
+    cancel() {
+      onCancel();
+    },
+  });
+  return new Response(body, {
+    headers: {
+      "content-type": "application/json",
+      "content-length": String(bytes),
+    },
+  });
 }
 
 function atomFeed(entries, { total = entries.length, start = 0, limit = entries.length } = {}) {
@@ -107,6 +178,88 @@ test("allows every signed-in ChatGPT account while preserving privileged roles",
   const missingQuery = await request("/api/arxiv", "outsider@example.com");
   assert.equal(missingQuery.status, 400);
   assert.equal(missingQuery.headers.get("cache-control"), "private, no-store");
+});
+
+test("rejects forged local-development identity headers", async () => {
+  const previousEnv = {
+    PAPER_ORBIT_LOCAL_MODE: process.env.PAPER_ORBIT_LOCAL_MODE,
+    PAPER_ORBIT_LOCAL_REQUEST_TOKEN:
+      process.env.PAPER_ORBIT_LOCAL_REQUEST_TOKEN,
+    PAPER_ORBIT_LOCAL_USER_EMAIL: process.env.PAPER_ORBIT_LOCAL_USER_EMAIL,
+    PAPER_ORBIT_LOCAL_USER_NAME: process.env.PAPER_ORBIT_LOCAL_USER_NAME,
+  };
+  const trustedToken = "c".repeat(64);
+  process.env.PAPER_ORBIT_LOCAL_MODE = "1";
+  process.env.PAPER_ORBIT_LOCAL_REQUEST_TOKEN = trustedToken;
+  process.env.PAPER_ORBIT_LOCAL_USER_EMAIL = "local-test@paperorbit.dev";
+  process.env.PAPER_ORBIT_LOCAL_USER_NAME = "Local Test";
+
+  try {
+    const missingMarker = await request(
+      "/api/ai/session",
+      null,
+      {},
+      "http://127.0.0.1:3000",
+    );
+    assert.equal(missingMarker.status, 401);
+
+    const forgedMarker = await request(
+      "/api/ai/session",
+      null,
+      {
+        headers: {
+          "x-paper-orbit-local-request": "d".repeat(64),
+          "x-forwarded-host": "localhost:3000",
+          "x-forwarded-proto": "http",
+        },
+      },
+      "http://127.0.0.1:3000",
+    );
+    assert.equal(forgedMarker.status, 401);
+
+    const publicHostWithForwardedLoopback = await request(
+      "/api/ai/session",
+      null,
+      {
+        headers: {
+          "x-paper-orbit-local-request": trustedToken,
+          "x-forwarded-host": "localhost:3000",
+          "x-forwarded-proto": "http",
+        },
+      },
+      "https://paper-orbit.test",
+    );
+    assert.equal(publicHostWithForwardedLoopback.status, 401);
+
+    const loopbackUrlWithPublicHost = await request(
+      "/api/ai/session",
+      null,
+      {
+        headers: {
+          host: "paper-orbit.test",
+          "x-paper-orbit-local-request": trustedToken,
+          "x-forwarded-host": "localhost:3000",
+          "x-forwarded-proto": "http",
+        },
+      },
+      "http://127.0.0.1:3000",
+    );
+    assert.equal(loopbackUrlWithPublicHost.status, 401);
+
+    const trustedLoopback = await request(
+      "/api/ai/session",
+      null,
+      { headers: { "x-paper-orbit-local-request": trustedToken } },
+      "http://127.0.0.1:3000",
+    );
+    assert.equal(trustedLoopback.status, 200);
+    assert.equal((await trustedLoopback.json()).connected, false);
+  } finally {
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test("keeps shared provider credentials exclusive to owner and manager accounts", async () => {
@@ -334,12 +487,28 @@ test("connects a private OpenAI session and sends only the validated arXiv PDF",
   await withMockedFetch(async (input, init = {}) => {
     const url = typeof input === "string" ? input : input.url;
     upstreamCalls.push({ url, init });
+    if (url === "https://arxiv.org/pdf/2607.00001") {
+      if (init.method === "HEAD") return arxivPdfHeadResponse();
+      assert.equal(init.method, "GET");
+      return arxivPdfRangeResponse();
+    }
     if (url === "https://api.openai.com/v1/models") {
       assert.equal(new Headers(init.headers).get("authorization"), `Bearer ${apiKey}`);
       return Response.json({ data: [{ id: "gpt-5.6" }] });
     }
     if (url === "https://api.openai.com/v1/responses") {
       assert.equal(new Headers(init.headers).get("authorization"), `Bearer ${apiKey}`);
+      if (isConnectionProbe(init)) {
+        const payload = requestPayload(init);
+        assert.equal(payload.model, "gpt-5.6");
+        assert.equal(payload.stream, false);
+        assert.equal(payload.store, false);
+        assert.equal(payload.max_output_tokens, 16);
+        return Response.json({
+          output_text: "PAPER_ORBIT_OK",
+          usage: { input_tokens: 9, output_tokens: 5, total_tokens: 14 },
+        });
+      }
       return Response.json({
         output_text:
           "论文的核心机制由三个阶段构成：先编码观测，再用联合目标学习动态表示，最后在推理阶段产生动作。正文证据需要结合方法节、实验节和对应图表核验；这里的测试回答用于确认 PDF 全文链路已经生效。",
@@ -370,6 +539,7 @@ test("connects a private OpenAI session and sends only the validated arXiv PDF",
     assert.match(setCookie, /HttpOnly/);
     assert.match(setCookie, /SameSite=Strict/);
     assert.match(setCookie, /Secure/);
+    assert.doesNotMatch(setCookie, /Max-Age=/);
     assert.doesNotMatch(setCookie, /sk-test/);
     const cookie = setCookie.split(";")[0];
 
@@ -427,12 +597,15 @@ test("connects a private OpenAI session and sends only the validated arXiv PDF",
       totalTokens: 1321,
     });
 
-    const responsesCall = upstreamCalls.find(
-      (call) => call.url === "https://api.openai.com/v1/responses",
-    );
+    const responsesCall = upstreamCalls.find((call) => {
+      if (call.url !== "https://api.openai.com/v1/responses") return false;
+      const payload = requestPayload(call.init);
+      return payload?.input?.[0]?.content?.[0]?.type === "input_file";
+    });
     assert.ok(responsesCall);
     const payload = JSON.parse(responsesCall.init.body);
     assert.equal(payload.model, "gpt-5.6");
+    assert.equal(payload.stream, false);
     assert.equal(payload.store, false);
     assert.equal(payload.input[0].content[0].type, "input_file");
     assert.equal(
@@ -476,22 +649,49 @@ test("uses a reader-owned OpenAI-compatible Base URL, short key, and custom mode
   await withMockedFetch(async (input, init = {}) => {
     const url = typeof input === "string" ? input : input.url;
     upstreamCalls.push({ url, init });
+    if (url === "https://arxiv.org/pdf/2607.00002") {
+      if (init.method === "HEAD") return arxivPdfHeadResponse(2_500_000);
+      assert.equal(init.method, "GET");
+      return arxivPdfRangeResponse(2_500_000);
+    }
     assert.equal(new Headers(init.headers).get("authorization"), `Bearer ${apiKey}`);
-    assert.equal(init.redirect, "error");
+    assert.equal(init.redirect, "manual");
 
     if (url === `${baseUrl}/models`) {
       return Response.json({ data: [{ id: model, object: "model" }] });
     }
     if (url === `${baseUrl}/responses`) {
-      return Response.json({
-        output_text:
-          "这篇论文首先定义研究问题，再由核心表征模块提取状态，随后通过训练目标约束动态变化，最后在实验中验证主要组件。回答来自自定义兼容服务，用于确认端点、模型和全文输入均按个人会话隔离。",
-        usage: {
-          input_tokens: 321,
-          output_tokens: 54,
-          total_tokens: 375,
+      if (isConnectionProbe(init)) {
+        const payload = requestPayload(init);
+        assert.equal(payload.model, model);
+        assert.equal(payload.stream, false);
+        assert.equal(payload.store, false);
+        assert.equal(payload.max_output_tokens, 16);
+        return Response.json({ output_text: "PAPER_ORBIT_OK" });
+      }
+      const payload = requestPayload(init);
+      assert.equal(payload.stream, true);
+      const outputText =
+        "这篇论文首先定义研究问题，再由核心表征模块提取状态，随后通过训练目标约束动态变化，最后在实验中验证主要组件。回答来自自定义兼容服务，用于确认端点、模型和全文输入均按个人会话隔离。";
+      return new Response(
+        `event: response.completed\ndata: ${JSON.stringify({
+          type: "response.completed",
+          response: {
+            output_text: outputText,
+            usage: {
+              input_tokens: 321,
+              output_tokens: 54,
+              total_tokens: 375,
+            },
+          },
+        })}\n\n`,
+        {
+          headers: {
+            "content-type": "text/event-stream; charset=utf-8",
+            "x-request-id": "custom-fulltext-request",
+          },
         },
-      });
+      );
     }
     throw new Error(`Unexpected upstream request: ${url}`);
   }, async () => {
@@ -552,12 +752,15 @@ test("uses a reader-owned OpenAI-compatible Base URL, short key, and custom mode
     assert.equal(answer.model, model);
     assert.equal(answer.credentialSource, "session");
 
-    const responsesCall = upstreamCalls.find(
-      (call) => call.url === `${baseUrl}/responses`,
-    );
+    const responsesCall = upstreamCalls.find((call) => {
+      if (call.url !== `${baseUrl}/responses`) return false;
+      const payload = requestPayload(call.init);
+      return payload?.input?.[0]?.content?.[0]?.type === "input_file";
+    });
     assert.ok(responsesCall);
     const payload = JSON.parse(responsesCall.init.body);
     assert.equal(payload.model, model);
+    assert.equal(payload.stream, true);
     assert.equal(payload.input[0].content[0].type, "input_file");
     assert.equal(
       payload.input[0].content[0].file_url,
@@ -566,9 +769,550 @@ test("uses a reader-owned OpenAI-compatible Base URL, short key, and custom mode
   });
 });
 
+test("attributes an arXiv PDF failure before sending any full-text model request", async () => {
+  const apiKey = "arxiv-diagnostic-key";
+  const readerEmail = "arxiv-diagnostic@example.com";
+  let fulltextCalls = 0;
+
+  await withMockedFetch(async (input, init = {}) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url === "https://api.openai.com/v1/models") {
+      return Response.json({ data: [{ id: "gpt-5.6" }] });
+    }
+    if (url === "https://api.openai.com/v1/responses") {
+      if (isConnectionProbe(init)) {
+        return Response.json({ output_text: "PAPER_ORBIT_OK" });
+      }
+      fulltextCalls += 1;
+      return Response.json({ output_text: "This must not be called." });
+    }
+    if (url === "https://arxiv.org/pdf/2607.01001") {
+      return Response.json({ error: "maintenance" }, { status: 503 });
+    }
+    throw new Error(`Unexpected upstream request: ${url}`);
+  }, async () => {
+    const connectResponse = await request("/api/ai/session", readerEmail, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ apiKey }),
+    });
+    assert.equal(connectResponse.status, 200);
+    const cookie = (connectResponse.headers.get("set-cookie") ?? "").split(";")[0];
+
+    const aiResponse = await request("/api/ai", readerEmail, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        paper: {
+          id: "2607.01001",
+          title: "Unavailable arXiv PDF",
+          summary: "Metadata remains available.",
+        },
+        prompt: "请阅读全文。",
+      }),
+    });
+    assert.equal(aiResponse.status, 502);
+    assert.equal(aiResponse.headers.get("cache-control"), "no-store");
+    const result = await aiResponse.json();
+    assert.equal(result.code, "ARXIV_PDF_UNAVAILABLE");
+    assert.equal(result.diagnostic.category, "arxiv");
+    assert.equal(result.diagnostic.stage, "arxiv-pdf");
+    assert.equal(result.diagnostic.arxiv.available, false);
+    assert.equal(result.diagnostic.arxiv.status, 503);
+    assert.match(
+      aiResponse.headers.get("x-paper-orbit-diagnostic-id") ?? "",
+      /^po-[a-f0-9]{16}$/,
+    );
+  });
+
+  assert.equal(fulltextCalls, 0);
+});
+
+test("rejects arXiv content whose signature or complete size cannot be verified", async () => {
+  const apiKey = "arxiv-verification-key";
+  const readerEmail = "arxiv-verification@example.com";
+  let fulltextCalls = 0;
+
+  await withMockedFetch(async (input, init = {}) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url === "https://api.openai.com/v1/models") {
+      return Response.json({ data: [{ id: "gpt-5.6" }] });
+    }
+    if (url === "https://api.openai.com/v1/responses") {
+      if (isConnectionProbe(init)) {
+        return Response.json({ output_text: "PAPER_ORBIT_OK" });
+      }
+      fulltextCalls += 1;
+      return Response.json({ output_text: "This must not be called." });
+    }
+    if (url === "https://arxiv.org/pdf/2607.02001") {
+      return init.method === "HEAD"
+        ? arxivPdfHeadResponse(900_000)
+        : arxivPdfRangeResponse(900_000, "NOTPDF!!");
+    }
+    if (url === "https://arxiv.org/pdf/2607.02002") {
+      if (init.method === "HEAD") {
+        return new Response(null, {
+          status: 200,
+          headers: { "content-type": "application/pdf" },
+        });
+      }
+      return new Response("%PDF-1.7", {
+        status: 206,
+        headers: {
+          "content-type": "application/pdf",
+          "content-length": "8",
+        },
+      });
+    }
+    throw new Error(`Unexpected upstream request: ${url}`);
+  }, async () => {
+    const connectResponse = await request("/api/ai/session", readerEmail, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ apiKey }),
+    });
+    assert.equal(connectResponse.status, 200);
+    const cookie = (connectResponse.headers.get("set-cookie") ?? "").split(";")[0];
+
+    const ask = (id) => request("/api/ai", readerEmail, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        paper: {
+          id,
+          title: "Unverified arXiv PDF",
+          summary: "Metadata remains available.",
+        },
+        prompt: "请阅读全文。",
+      }),
+    });
+
+    const invalidSignature = await ask("2607.02001");
+    assert.equal(invalidSignature.status, 422);
+    assert.equal((await invalidSignature.json()).code, "ARXIV_PDF_INVALID");
+
+    const unknownSize = await ask("2607.02002");
+    assert.equal(unknownSize.status, 502);
+    assert.equal(
+      (await unknownSize.json()).code,
+      "ARXIV_PDF_UNVERIFIABLE",
+    );
+  });
+
+  assert.equal(fulltextCalls, 0);
+});
+
+test("attributes a provider full-text timeout while proving arXiv and text Responses are healthy", async () => {
+  const apiKey = "provider-timeout-key";
+  const readerEmail = "provider-timeout@example.com";
+  const baseUrl = "https://timeout.paperorbit.ai/v1";
+  const model = "slow-fulltext-model";
+  let fulltextCalls = 0;
+  let runtimeDiagnosticCalls = 0;
+
+  await withMockedFetch(async (input, init = {}) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url === "https://arxiv.org/pdf/2607.01002") {
+      return init.method === "HEAD"
+        ? arxivPdfHeadResponse(11_000_071)
+        : arxivPdfRangeResponse(11_000_071);
+    }
+    if (url === `${baseUrl}/models`) {
+      return Response.json({ data: [{ id: model }] });
+    }
+    if (url === `${baseUrl}/responses`) {
+      if (isConnectionProbe(init)) {
+        return Response.json({ output_text: "PAPER_ORBIT_OK" });
+      }
+      if (isRuntimeDiagnosticProbe(init)) {
+        runtimeDiagnosticCalls += 1;
+        return Response.json({ output_text: "PAPER_ORBIT_DIAGNOSTIC_OK" });
+      }
+      fulltextCalls += 1;
+      return Response.json(
+        { error: { code: "gateway_timeout", message: "upstream timed out" } },
+        { status: 504, headers: { "x-request-id": `timeout-${fulltextCalls}` } },
+      );
+    }
+    throw new Error(`Unexpected upstream request: ${url}`);
+  }, async () => {
+    const connectResponse = await request("/api/ai/session", readerEmail, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ apiKey, baseUrl, model }),
+    });
+    assert.equal(connectResponse.status, 200);
+    const cookie = (connectResponse.headers.get("set-cookie") ?? "").split(";")[0];
+
+    const aiResponse = await request("/api/ai", readerEmail, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        paper: {
+          id: "2607.01002",
+          title: "Slow full-text paper",
+          summary: "A short summary.",
+        },
+        prompt: "请分析全文。",
+      }),
+    });
+    assert.equal(aiResponse.status, 504);
+    const result = await aiResponse.json();
+    assert.equal(result.code, "PROVIDER_FULLTEXT_TIMEOUT");
+    assert.equal(result.diagnostic.category, "provider");
+    assert.equal(result.diagnostic.arxiv.available, true);
+    assert.equal(result.diagnostic.arxiv.bytes, 11_000_071);
+    assert.equal(result.diagnostic.provider.status, 504);
+    assert.equal(result.diagnostic.provider.textProbe, "passed");
+    assert.equal(result.diagnostic.provider.reachable, true);
+    assert.equal(result.diagnostic.provider.attempts, 2);
+    assert.match(result.error, /arXiv PDF 当前可读取/);
+    assert.match(result.error, /文本探针同时通过/);
+  });
+
+  assert.equal(fulltextCalls, 2, "fast 504 failures receive one bounded retry");
+  assert.equal(runtimeDiagnosticCalls, 1);
+});
+
+test("recovers automatically from one fast compatible-provider gateway failure", async () => {
+  const apiKey = "provider-retry-key";
+  const readerEmail = "provider-retry@example.com";
+  const baseUrl = "https://retry.paperorbit.ai/v1";
+  const model = "retry-fulltext-model";
+  let fulltextCalls = 0;
+
+  await withMockedFetch(async (input, init = {}) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url === "https://arxiv.org/pdf/2607.01003") {
+      return init.method === "HEAD"
+        ? arxivPdfHeadResponse(1_200_000)
+        : arxivPdfRangeResponse(1_200_000);
+    }
+    if (url === `${baseUrl}/models`) {
+      return Response.json({ data: [{ id: model }] });
+    }
+    if (url === `${baseUrl}/responses`) {
+      if (isConnectionProbe(init)) {
+        return Response.json({ output_text: "PAPER_ORBIT_OK" });
+      }
+      fulltextCalls += 1;
+      if (fulltextCalls === 1) {
+        return Response.json(
+          { error: { code: "bad_gateway", message: "temporary upstream connection failure" } },
+          { status: 502 },
+        );
+      }
+      return new Response(
+        `event: response.output_text.delta\ndata: ${JSON.stringify({
+          type: "response.output_text.delta",
+          delta: "模型在一次有界重试后成功读取全文，并返回了可核验的论文分析。",
+        })}\n\nevent: response.completed\ndata: ${JSON.stringify({
+          type: "response.completed",
+          response: {
+            usage: { input_tokens: 800, output_tokens: 28, total_tokens: 828 },
+          },
+        })}\n\n`,
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    }
+    throw new Error(`Unexpected upstream request: ${url}`);
+  }, async () => {
+    const connectResponse = await request("/api/ai/session", readerEmail, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ apiKey, baseUrl, model }),
+    });
+    assert.equal(connectResponse.status, 200);
+    const cookie = (connectResponse.headers.get("set-cookie") ?? "").split(";")[0];
+
+    const aiResponse = await request("/api/ai", readerEmail, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        paper: {
+          id: "2607.01003",
+          title: "Retry recovery paper",
+          summary: "A short summary.",
+        },
+        prompt: "请解释核心机制。",
+      }),
+    });
+    assert.equal(aiResponse.status, 200);
+    const result = await aiResponse.json();
+    assert.equal(result.mode, "openai");
+    assert.equal(result.diagnostic.category, "success");
+    assert.equal(result.diagnostic.provider.transport, "sse");
+    assert.equal(result.diagnostic.provider.attempts, 2);
+    assert.equal(result.usage.totalTokens, 828);
+  });
+
+  assert.equal(fulltextCalls, 2);
+});
+
+test("cancels an abnormally large full-text provider response", async () => {
+  const apiKey = "fulltext-response-limit-key";
+  const readerEmail = "fulltext-limit@example.com";
+  const baseUrl = "https://fulltext-limit.paperorbit.ai/v1";
+  const model = "bounded-fulltext-model";
+  let fulltextCalls = 0;
+  let responseBodyCancelled = false;
+
+  await withMockedFetch(async (input, init = {}) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url === "https://arxiv.org/pdf/2607.01004") {
+      return init.method === "HEAD"
+        ? arxivPdfHeadResponse(1_500_000)
+        : arxivPdfRangeResponse(1_500_000);
+    }
+    if (url === `${baseUrl}/models`) {
+      return Response.json({ data: [{ id: model }] });
+    }
+    if (url === `${baseUrl}/responses`) {
+      if (isConnectionProbe(init)) {
+        return Response.json({ output_text: "PAPER_ORBIT_OK" });
+      }
+      fulltextCalls += 1;
+      return declaredOversizedJsonResponse(
+        4 * 1024 * 1024 + 1,
+        () => { responseBodyCancelled = true; },
+      );
+    }
+    throw new Error(`Unexpected upstream request: ${url}`);
+  }, async () => {
+    const connectResponse = await request("/api/ai/session", readerEmail, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ apiKey, baseUrl, model }),
+    });
+    assert.equal(connectResponse.status, 200);
+    const cookie = (connectResponse.headers.get("set-cookie") ?? "").split(";")[0];
+
+    const aiResponse = await request("/api/ai", readerEmail, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        paper: {
+          id: "2607.01004",
+          title: "Oversized provider response paper",
+          summary: "A short summary.",
+        },
+        prompt: "请分析全文。",
+      }),
+    });
+    assert.equal(aiResponse.status, 502);
+    const result = await aiResponse.json();
+    assert.equal(result.code, "PROVIDER_RESPONSE_TOO_LARGE");
+    assert.equal(result.diagnostic.retryable, false);
+    assert.equal(result.diagnostic.provider.textProbe, "not-run");
+  });
+
+  assert.equal(fulltextCalls, 1);
+  assert.equal(responseBodyCancelled, true);
+});
+
+test("never exposes a provider request ID containing the personal API key", async () => {
+  const apiKey = "e".repeat(64);
+  const readerEmail = "request-id-redaction@example.com";
+  const baseUrl = "https://request-id.paperorbit.ai/v1";
+  const model = "request-id-model";
+  const warningRecords = [];
+
+  await withMockedFetch(async (input, init = {}) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url === "https://arxiv.org/pdf/2607.01005") {
+      return init.method === "HEAD"
+        ? arxivPdfHeadResponse(800_000)
+        : arxivPdfRangeResponse(800_000);
+    }
+    if (url === `${baseUrl}/models`) {
+      return Response.json({ data: [{ id: model }] });
+    }
+    if (url === `${baseUrl}/responses`) {
+      if (isConnectionProbe(init)) {
+        return Response.json({ output_text: "PAPER_ORBIT_OK" });
+      }
+      return Response.json(
+        { error: { code: "request_rejected", message: "invalid PDF request" } },
+        { status: 400, headers: { "x-request-id": apiKey } },
+      );
+    }
+    throw new Error(`Unexpected upstream request: ${url}`);
+  }, async () => {
+    const connectResponse = await request("/api/ai/session", readerEmail, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ apiKey, baseUrl, model }),
+    });
+    assert.equal(connectResponse.status, 200);
+    const cookie = (connectResponse.headers.get("set-cookie") ?? "").split(";")[0];
+
+    const originalWarn = console.warn;
+    console.warn = (...args) => warningRecords.push(args);
+    try {
+      const aiResponse = await request("/api/ai", readerEmail, {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({
+          paper: {
+            id: "2607.01005",
+            title: "Request ID redaction paper",
+            summary: "A short summary.",
+          },
+          prompt: "请分析全文。",
+        }),
+      });
+      assert.equal(aiResponse.status, 502);
+      const raw = await aiResponse.text();
+      assert.doesNotMatch(raw, new RegExp(apiKey));
+      const result = JSON.parse(raw);
+      assert.equal(result.diagnostic.provider.requestId, null);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  assert.doesNotMatch(JSON.stringify(warningRecords), new RegExp(apiKey));
+});
+
+test("rejects a connection when a compatible provider ignores non-stream Responses mode", async () => {
+  const apiKey = "streaming-proxy-key";
+  const readerEmail = "streaming-proxy-reader@example.com";
+  const baseUrl = "https://streaming.paperorbit.ai/v1";
+  const model = "streaming-model";
+
+  await withMockedFetch(async (input, init = {}) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url === `${baseUrl}/models`) {
+      return Response.json({ data: [{ id: model }] });
+    }
+    if (url === `${baseUrl}/responses`) {
+      const payload = JSON.parse(init.body);
+      assert.equal(payload.stream, false);
+      return new Response(
+        'event: response.completed\ndata: {"response":{"output_text":"ignored stream mode"}}\n\n',
+        { headers: { "content-type": "text/event-stream; charset=utf-8" } },
+      );
+    }
+    throw new Error(`Unexpected upstream request: ${url}`);
+  }, async () => {
+    const connectResponse = await request("/api/ai/session", readerEmail, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ apiKey, baseUrl, model }),
+    });
+    assert.equal(connectResponse.status, 502);
+    assert.equal(connectResponse.headers.get("set-cookie"), null);
+    const error = await connectResponse.json();
+    assert.equal(error.code, "OPENAI_RESPONSES_INCOMPATIBLE");
+    assert.match(error.error, /连接未保存/);
+  });
+});
+
+test("does not save a session when the live Responses inference fails", async () => {
+  const baseUrl = "https://recursive-proxy.paperorbit.ai/v1";
+  const model = "recursive-model";
+
+  await withMockedFetch(async (input) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url === `${baseUrl}/models`) {
+      return Response.json({ data: [{ id: model }] });
+    }
+    if (url === `${baseUrl}/responses`) {
+      return Response.json(
+        { error: { code: "codex_api_error", message: "fetch failed" } },
+        { status: 502 },
+      );
+    }
+    throw new Error(`Unexpected upstream request: ${url}`);
+  }, async () => {
+    const response = await request("/api/ai/session", "recursive-reader@example.com", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ apiKey: "recursive-key", baseUrl, model }),
+    });
+    assert.equal(response.status, 502);
+    assert.equal(response.headers.get("set-cookie"), null);
+    const error = await response.json();
+    assert.equal(error.code, "OPENAI_LIVE_CHECK_FAILED");
+    assert.match(error.error, /上游路由/);
+  });
+});
+
+test("bounds provider responses while validating a personal connection", async () => {
+  const modelsBaseUrl = "https://oversized-models.paperorbit.ai/v1";
+  const responsesBaseUrl = "https://oversized-responses.paperorbit.ai/v1";
+  let modelsBodyCancelled = false;
+  let responsesBodyCancelled = false;
+
+  await withMockedFetch(async (input) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url === `${modelsBaseUrl}/models`) {
+      return declaredOversizedJsonResponse(
+        1024 * 1024 + 1,
+        () => { modelsBodyCancelled = true; },
+      );
+    }
+    if (url === `${responsesBaseUrl}/models`) {
+      return Response.json({ data: [{ id: "bounded-model" }] });
+    }
+    if (url === `${responsesBaseUrl}/responses`) {
+      return declaredOversizedJsonResponse(
+        256 * 1024 + 1,
+        () => { responsesBodyCancelled = true; },
+      );
+    }
+    throw new Error(`Unexpected upstream request: ${url}`);
+  }, async () => {
+    const oversizedModels = await request(
+      "/api/ai/session",
+      "oversized-models@example.com",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          apiKey: "models-limit-key",
+          baseUrl: modelsBaseUrl,
+          model: "bounded-model",
+        }),
+      },
+    );
+    assert.equal(oversizedModels.status, 502);
+    assert.equal(oversizedModels.headers.get("set-cookie"), null);
+    assert.equal(
+      (await oversizedModels.json()).code,
+      "OPENAI_MODELS_RESPONSE_TOO_LARGE",
+    );
+
+    const oversizedResponses = await request(
+      "/api/ai/session",
+      "oversized-responses@example.com",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          apiKey: "responses-limit-key",
+          baseUrl: responsesBaseUrl,
+          model: "bounded-model",
+        }),
+      },
+    );
+    assert.equal(oversizedResponses.status, 502);
+    assert.equal(oversizedResponses.headers.get("set-cookie"), null);
+    assert.equal(
+      (await oversizedResponses.json()).code,
+      "OPENAI_RESPONSES_TOO_LARGE",
+    );
+  });
+
+  assert.equal(modelsBodyCancelled, true);
+  assert.equal(responsesBodyCancelled, true);
+});
+
 test("rejects unsafe custom AI endpoints before sending a credential", async () => {
   const unsafeBaseUrls = [
     "http://gateway.paperorbit.ai/v1",
+    "http://127.0.0.1:8080/v1",
     "https://localhost/v1",
     "https://service.local/v1",
     "https://127.0.0.1/v1",
@@ -608,6 +1352,322 @@ test("rejects unsafe custom AI endpoints before sending a credential", async () 
   });
 
   assert.equal(fetchCalls, 0);
+});
+
+test("allows a loopback AI endpoint only in explicit local development mode", async () => {
+  const previousLocalMode = process.env.PAPER_ORBIT_LOCAL_MODE;
+  const previousLocalToken = process.env.PAPER_ORBIT_LOCAL_REQUEST_TOKEN;
+  const previousLocalEmail = process.env.PAPER_ORBIT_LOCAL_USER_EMAIL;
+  const previousLocalName = process.env.PAPER_ORBIT_LOCAL_USER_NAME;
+  const localRequestToken = "a".repeat(64);
+  process.env.PAPER_ORBIT_LOCAL_MODE = "1";
+  process.env.PAPER_ORBIT_LOCAL_REQUEST_TOKEN = localRequestToken;
+  process.env.PAPER_ORBIT_LOCAL_USER_EMAIL = "local-reader@paperorbit.dev";
+  process.env.PAPER_ORBIT_LOCAL_USER_NAME = "Local Reader";
+
+  const origin = "http://127.0.0.1:3000";
+  const baseUrl = "http://127.0.0.1:8080/v1";
+  const apiKey = "local-proxy-key";
+  const model = "local-paper-model";
+  const upstreamCalls = [];
+
+  try {
+    await withMockedFetch(async (input, init = {}) => {
+      const url = typeof input === "string" ? input : input.url;
+      upstreamCalls.push({ url, init });
+      if (url === "https://arxiv.org/pdf/2607.00003") {
+        if (init.method === "HEAD") return arxivPdfHeadResponse(900_000);
+        assert.equal(init.method, "GET");
+        return arxivPdfRangeResponse(900_000);
+      }
+      assert.equal(new Headers(init.headers).get("authorization"), `Bearer ${apiKey}`);
+      assert.equal(init.redirect, "manual");
+
+      if (url === `${baseUrl}/models`) {
+        return Response.json({ data: [{ id: model }] });
+      }
+      if (url === `${baseUrl}/responses`) {
+        if (isConnectionProbe(init)) {
+          const payload = requestPayload(init);
+          assert.equal(payload.model, model);
+          assert.equal(payload.stream, false);
+          assert.equal(payload.store, false);
+          assert.equal(payload.max_output_tokens, 16);
+          return Response.json({ output_text: "PAPER_ORBIT_OK" });
+        }
+        return Response.json({
+          output_text:
+            "本地模型读取论文全文后，先识别问题设定，再分析方法模块之间的数据流，最后结合实验与消融结果说明结论边界。这段回答用于验证本机回环服务能够完成完整的 Paper Copilot 请求链路。",
+          usage: {
+            input_tokens: 210,
+            output_tokens: 46,
+            total_tokens: 256,
+          },
+        });
+      }
+      throw new Error(`Unexpected upstream request: ${url}`);
+    }, async () => {
+      const pageResponse = await request(
+        "/",
+        null,
+        { headers: { "x-paper-orbit-local-request": localRequestToken } },
+        origin,
+      );
+      assert.equal(pageResponse.status, 200);
+      assert.match(await pageResponse.text(), /Local Reader/);
+
+      const connectResponse = await request(
+        "/api/ai/session",
+        null,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-paper-orbit-local-request": localRequestToken,
+          },
+          body: JSON.stringify({ apiKey, baseUrl, model }),
+        },
+        origin,
+      );
+      assert.equal(connectResponse.status, 200);
+      assert.deepEqual(await connectResponse.json(), {
+        connected: true,
+        source: "session",
+        baseUrl,
+        model,
+        sessionAvailable: true,
+      });
+
+      const setCookie = connectResponse.headers.get("set-cookie") ?? "";
+      assert.match(setCookie, /^paper_orbit_openai_session=v1\./);
+      assert.match(setCookie, /HttpOnly/);
+      assert.match(setCookie, /SameSite=Strict/);
+      assert.match(setCookie, /Max-Age=7776000/);
+      assert.doesNotMatch(setCookie, /; Secure/);
+      assert.doesNotMatch(setCookie, /local-proxy-key/);
+      const cookie = setCookie.split(";")[0];
+
+      const statusResponse = await request(
+        "/api/ai/session",
+        null,
+        {
+          headers: {
+            cookie,
+            "x-paper-orbit-local-request": localRequestToken,
+          },
+        },
+        origin,
+      );
+      assert.equal(statusResponse.status, 200);
+      assert.deepEqual(await statusResponse.json(), {
+        connected: true,
+        source: "session",
+        baseUrl,
+        model,
+        sessionAvailable: true,
+      });
+
+      const aiResponse = await request(
+        "/api/ai",
+        null,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            cookie,
+            "x-paper-orbit-local-request": localRequestToken,
+          },
+          body: JSON.stringify({
+            paper: {
+              id: "2607.00003",
+              title: "Local Loopback Provider Paper",
+              authors: ["Local Researcher"],
+              summary: "Metadata for the local provider test.",
+              category: "cs.AI",
+              tags: ["Local AI"],
+            },
+            action: "chat",
+            prompt: "请解释论文的核心机制。",
+          }),
+        },
+        origin,
+      );
+      assert.equal(aiResponse.status, 200);
+      const answer = await aiResponse.json();
+      assert.equal(answer.mode, "openai");
+      assert.equal(answer.provider, "compatible");
+      assert.equal(answer.model, model);
+
+      const productionResponse = await request(
+        "/api/ai/session",
+        "reader@example.com",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ apiKey, baseUrl, model }),
+        },
+      );
+      assert.equal(productionResponse.status, 400);
+      assert.equal(
+        (await productionResponse.json()).code,
+        "OPENAI_BASE_URL_INVALID",
+      );
+    });
+
+    assert.deepEqual(
+      upstreamCalls.map((call) => call.url),
+      [
+        `${baseUrl}/models`,
+        `${baseUrl}/responses`,
+        "https://arxiv.org/pdf/2607.00003",
+        "https://arxiv.org/pdf/2607.00003",
+        `${baseUrl}/responses`,
+      ],
+    );
+  } finally {
+    if (previousLocalMode === undefined) delete process.env.PAPER_ORBIT_LOCAL_MODE;
+    else process.env.PAPER_ORBIT_LOCAL_MODE = previousLocalMode;
+    if (previousLocalToken === undefined) delete process.env.PAPER_ORBIT_LOCAL_REQUEST_TOKEN;
+    else process.env.PAPER_ORBIT_LOCAL_REQUEST_TOKEN = previousLocalToken;
+    if (previousLocalEmail === undefined) delete process.env.PAPER_ORBIT_LOCAL_USER_EMAIL;
+    else process.env.PAPER_ORBIT_LOCAL_USER_EMAIL = previousLocalEmail;
+    if (previousLocalName === undefined) delete process.env.PAPER_ORBIT_LOCAL_USER_NAME;
+    else process.env.PAPER_ORBIT_LOCAL_USER_NAME = previousLocalName;
+  }
+});
+
+test("local development mode chats through the shared .env credential", async () => {
+  const previousEnv = {
+    PAPER_ORBIT_LOCAL_MODE: process.env.PAPER_ORBIT_LOCAL_MODE,
+    PAPER_ORBIT_LOCAL_REQUEST_TOKEN:
+      process.env.PAPER_ORBIT_LOCAL_REQUEST_TOKEN,
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+    OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
+    OPENAI_MODEL: process.env.OPENAI_MODEL,
+  };
+  const localRequestToken = "b".repeat(64);
+  process.env.PAPER_ORBIT_LOCAL_MODE = "1";
+  process.env.PAPER_ORBIT_LOCAL_REQUEST_TOKEN = localRequestToken;
+  process.env.OPENAI_API_KEY = "env-local-gateway-key";
+  process.env.OPENAI_BASE_URL = "http://127.0.0.1:8080/v1";
+  process.env.OPENAI_MODEL = "gpt-5.6-terra";
+
+  const origin = "http://127.0.0.1:3000";
+  const baseUrl = "http://127.0.0.1:8080/v1";
+  const upstreamCalls = [];
+
+  try {
+    await withMockedFetch(async (input, init = {}) => {
+      const url = typeof input === "string" ? input : input.url;
+      upstreamCalls.push({ url, init });
+      if (url === "https://arxiv.org/pdf/2607.00005") {
+        if (init.method === "HEAD") return arxivPdfHeadResponse(900_000);
+        assert.equal(init.method, "GET");
+        return arxivPdfRangeResponse(900_000);
+      }
+      if (url === `${baseUrl}/responses`) {
+        assert.equal(
+          new Headers(init.headers).get("authorization"),
+          "Bearer env-local-gateway-key",
+        );
+        assert.equal(requestPayload(init).model, "gpt-5.6-terra");
+        return Response.json({
+          output_text:
+            "本地共享凭据读取论文全文后，先梳理研究问题与方法结构，再对照实验与消融结果说明证据边界。这段回答用于验证 .env 共享凭据能够完成完整的 Paper Copilot 请求链路。",
+          usage: {
+            input_tokens: 190,
+            output_tokens: 42,
+            total_tokens: 232,
+          },
+        });
+      }
+      throw new Error(`Unexpected upstream request: ${url}`);
+    }, async () => {
+      const statusResponse = await request(
+        "/api/ai/session",
+        null,
+        { headers: { "x-paper-orbit-local-request": localRequestToken } },
+        origin,
+      );
+      assert.equal(statusResponse.status, 200);
+      assert.deepEqual(await statusResponse.json(), {
+        connected: true,
+        source: "shared",
+        baseUrl,
+        model: "gpt-5.6-terra",
+        sessionAvailable: true,
+      });
+
+      const aiResponse = await request(
+        "/api/ai",
+        null,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-paper-orbit-local-request": localRequestToken,
+          },
+          body: JSON.stringify({
+            paper: {
+              id: "2607.00005",
+              title: "Env Credential Loopback Paper",
+              authors: ["Local Researcher"],
+              summary: "Metadata for the env credential test.",
+              category: "cs.AI",
+              tags: ["Local AI"],
+            },
+            action: "chat",
+            prompt: "请解释论文的核心机制。",
+          }),
+        },
+        origin,
+      );
+      assert.equal(aiResponse.status, 200);
+      const answer = await aiResponse.json();
+      assert.equal(answer.mode, "openai");
+      assert.equal(answer.provider, "compatible");
+      assert.equal(answer.credentialSource, "shared");
+      assert.equal(answer.model, "gpt-5.6-terra");
+
+      // A production reader must never receive the shared credential.
+      const readerResponse = await request(
+        "/api/ai/session",
+        "reader@example.com",
+      );
+      assert.equal(readerResponse.status, 200);
+      assert.deepEqual(await readerResponse.json(), {
+        connected: false,
+        source: null,
+        baseUrl: null,
+        model: null,
+        sessionAvailable: true,
+      });
+
+      // Outside local mode a loopback OPENAI_BASE_URL disables the shared
+      // credential entirely instead of falling back to the official endpoint.
+      delete process.env.PAPER_ORBIT_LOCAL_MODE;
+      const managerResponse = await request(
+        "/api/ai/session",
+        "xumiaojun49@gmail.com",
+      );
+      assert.equal(managerResponse.status, 200);
+      assert.equal((await managerResponse.json()).connected, false);
+    });
+
+    assert.deepEqual(
+      upstreamCalls.map((call) => call.url),
+      [
+        "https://arxiv.org/pdf/2607.00005",
+        "https://arxiv.org/pdf/2607.00005",
+        `${baseUrl}/responses`,
+      ],
+    );
+  } finally {
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test("connects a reader-owned Semantic Scholar key for influence enrichment", async () => {
@@ -739,16 +1799,19 @@ test("connects a reader-owned Semantic Scholar key for influence enrichment", as
 });
 
 test("ships ten fallback papers and the local-first recommendation pipeline", async () => {
-  const [page, client, localUserStorage, access, route, searchQuery, researchSession, researchSessionRoute, aiRoute, encryptedSession, aiSession, sessionRoute, providerConfig, recommendation, layout, readme, envExample, hosting] = await Promise.all([
+  const [page, client, localUserStorage, localDevelopment, access, route, searchQuery, researchSession, researchSessionRoute, aiRoute, copilotTransport, boundedResponse, encryptedSession, aiSession, sessionRoute, providerConfig, recommendation, layout, readme, envExample, hosting, gitignore, localDevScript, viteConfig] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/paper-orbit-client.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/local-user-storage.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/local-development.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/access-control.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/arxiv/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/arxiv/search-query.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/arxiv/research-session.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/arxiv/session/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/ai/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/ai/copilot-transport.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/ai/bounded-response.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/encrypted-session.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/ai/openai-session.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/ai/session/route.ts", import.meta.url), "utf8"),
@@ -758,6 +1821,9 @@ test("ships ten fallback papers and the local-first recommendation pipeline", as
     readFile(new URL("../README.md", import.meta.url), "utf8"),
     readFile(new URL("../.env.example", import.meta.url), "utf8"),
     readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
+    readFile(new URL("../.gitignore", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/dev-local.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(client, /const DAILY_PAPER_COUNT = 10/);
@@ -809,10 +1875,43 @@ test("ships ten fallback papers and the local-first recommendation pipeline", as
   assert.match(encryptedSession, /AES-GCM/);
   assert.match(encryptedSession, /HttpOnly/);
   assert.match(encryptedSession, /SameSite=Strict/);
+  assert.match(encryptedSession, /LOCAL_SESSION_MAX_AGE_SECONDS/);
+  assert.match(encryptedSession, /isLocalDevelopmentRequest/);
+  assert.match(localDevelopment, /LOCAL_REQUEST_TOKEN_ENV/);
+  assert.match(localDevelopment, /hasTrustedLocalIngress/);
+  assert.doesNotMatch(localDevelopment, /x-forwarded-(?:host|proto)/);
+  assert.match(viteConfig, /randomBytes\(32\)/);
+  assert.match(viteConfig, /remoteAddress/);
+  assert.match(viteConfig, /encrypted !== true/);
+  assert.match(viteConfig, /socket\.localPort/);
+  assert.match(viteConfig, /delete request\.headers\[LOCAL_REQUEST_HEADER\]/);
+  assert.match(viteConfig, /request\.rawHeaders\.splice/);
+  assert.match(viteConfig, /FORWARDED_INGRESS_HEADERS/);
+  assert.match(viteConfig, /!url\.username/);
+  assert.match(viteConfig, /url\.pathname === "\/"/);
+  assert.match(gitignore, /\/\.paperorbit\//);
+  assert.match(localDevScript, /local-session-secret/);
+  assert.match(localDevScript, /mode: 0o600/);
+  assert.doesNotMatch(localDevScript, /console\.(?:log|info).*sessionSecret/);
   assert.match(aiSession, /isPaperOrbitPrivilegedEmail/);
   assert.match(sessionRoute, /openAIProviderEndpoint\(baseUrl, "models"\)/);
-  assert.match(sessionRoute, /redirect: "error"/);
-  assert.match(aiRoute, /openAIProviderEndpoint\(credential\.baseUrl, "responses"\)/);
+  assert.match(sessionRoute, /openAIProviderEndpoint\(baseUrl, "responses"\)/);
+  assert.match(sessionRoute, /PAPER_ORBIT_OK/);
+  assert.match(sessionRoute, /max_output_tokens: 16/);
+  assert.match(sessionRoute, /OPENAI_LIVE_CHECK_FAILED/);
+  assert.match(aiSession, /validation: "responses"/);
+  assert.match(sessionRoute, /redirect: "manual"/);
+  assert.match(sessionRoute, /readBoundedResponseJson/);
+  assert.match(boundedResponse, /ResponseBodyTooLargeError/);
+  assert.match(boundedResponse, /value\.byteLength/);
+  assert.match(boundedResponse, /reader\.cancel/);
+  assert.match(copilotTransport, /openAIProviderEndpoint\(credential\.baseUrl, "responses"\)/);
+  assert.match(copilotTransport, /probeArxivPdf/);
+  assert.match(copilotTransport, /text\/event-stream/);
+  assert.match(copilotTransport, /MAX_PROVIDER_SUCCESS_BODY/);
+  assert.doesNotMatch(copilotTransport, /response\.text\(\)/);
+  assert.match(aiRoute, /PROVIDER_FULLTEXT_TIMEOUT/);
+  assert.match(aiRoute, /PAPER_ORBIT_DIAGNOSTIC_OK/);
   assert.match(providerConfig, /https:\/\/api\.openai\.com\/v1/);
   assert.match(providerConfig, /normalizeOpenAIBaseUrl/);
   assert.match(providerConfig, /169 && second === 254/);
@@ -827,6 +1926,13 @@ test("ships ten fallback papers and the local-first recommendation pipeline", as
   assert.match(client, /arXiv 公开 API/);
   assert.match(client, /Semantic Scholar API Key/);
   assert.match(client, /PDF 全文/);
+  assert.match(client, /AI 文本链路已实测连接/);
+  assert.match(client, /PDF 逐篇核验/);
+  assert.match(client, /重试本次问题/);
+  assert.doesNotMatch(client, /lastAiRun|setLastAiRun/);
+  assert.match(client, /message\.meta/);
+  assert.match(client, /message\.diagnostic/);
+  assert.match(client, /这只能证明模型与文本接口可用，不等于已经验证 PDF/);
   assert.match(readme, /Responses `\/responses`/);
   assert.match(readme, /Orbit v3 Local/);
   assert.match(readme, /90 天半衰期/);

@@ -1,5 +1,10 @@
 export const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
+export const LOCAL_OPENAI_BASE_URL = "http://127.0.0.1:8080/v1";
 export const DEFAULT_OPENAI_MODEL = "gpt-5.6";
+
+type OpenAIBaseUrlPolicy = {
+  allowLocalLoopback?: boolean;
+};
 
 const MAX_BASE_URL_LENGTH = 512;
 const MAX_API_KEY_LENGTH = 512;
@@ -67,16 +72,31 @@ function isBlockedHostname(hostname: string) {
   return isBlockedIpv4(normalized);
 }
 
-export function normalizeOpenAIBaseUrl(value: unknown) {
+function isAllowedLocalLoopbackUrl(url: URL, policy: OpenAIBaseUrlPolicy) {
+  if (!policy.allowLocalLoopback) return false;
+  const hostname = url.hostname.toLowerCase();
+  return (
+    (hostname === "127.0.0.1" || hostname === "localhost")
+    && (url.protocol === "http:" || url.protocol === "https:")
+  );
+}
+
+export function normalizeOpenAIBaseUrl(
+  value: unknown,
+  policy: OpenAIBaseUrlPolicy = {},
+) {
   const raw = typeof value === "string" ? value.trim() : "";
   if (!raw || raw.length > MAX_BASE_URL_LENGTH) return null;
 
   try {
     const url = new URL(raw);
-    if (url.protocol !== "https:") return null;
     if (url.username || url.password || url.search || url.hash) return null;
-    if (url.port && url.port !== "443") return null;
-    if (isBlockedHostname(url.hostname)) return null;
+    const localLoopback = isAllowedLocalLoopbackUrl(url, policy);
+    if (!localLoopback) {
+      if (url.protocol !== "https:") return null;
+      if (url.port && url.port !== "443") return null;
+      if (isBlockedHostname(url.hostname)) return null;
+    }
 
     const pathname = url.pathname.replace(/\/+$/g, "");
     return `${url.origin}${pathname}`;

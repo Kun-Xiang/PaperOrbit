@@ -55,6 +55,7 @@ export function paperOrbitViewerFor(
     displayName,
     email,
     initials: initialsFor(displayName, email),
+    localDevelopment: user.localDevelopment,
     role: access?.role ?? "reader",
   };
 }

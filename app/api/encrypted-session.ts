@@ -1,5 +1,11 @@
+import {
+  isLocalDevelopmentRequest,
+  localDevelopmentIdentityFromRequest,
+} from "../local-development";
+
 const SESSION_VERSION = "v1";
 const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+const LOCAL_SESSION_MAX_AGE_SECONDS = 90 * 24 * 60 * 60;
 
 type SessionEnvelope<T> = {
   connectedAt: string;
@@ -17,14 +23,23 @@ export function encryptedSessionsAvailable() {
 }
 
 export function requestSubject(request: Request) {
-  return request.headers
+  const authenticatedSubject = request.headers
     .get("oai-authenticated-user-email")
     ?.trim()
-    .toLowerCase() ?? "";
+    .toLowerCase();
+  return authenticatedSubject
+    || localDevelopmentIdentityFromRequest(request)?.email
+    || "";
 }
 
 function additionalData(scope: string) {
   return new TextEncoder().encode(`paper-orbit:${scope}:${SESSION_VERSION}`);
+}
+
+function sessionMaxAgeMs(request: Request) {
+  return isLocalDevelopmentRequest(request)
+    ? LOCAL_SESSION_MAX_AGE_SECONDS * 1000
+    : SESSION_MAX_AGE_MS;
 }
 
 function encodeBase64Url(bytes: Uint8Array) {
@@ -127,7 +142,7 @@ export async function readEncryptedSession<T>(
     if (
       !Number.isFinite(connectedAt)
       || age < -60_000
-      || age > SESSION_MAX_AGE_MS
+      || age > sessionMaxAgeMs(request)
     ) {
       return null;
     }
@@ -149,13 +164,19 @@ function secureAttribute(request: Request) {
     : "";
 }
 
+function persistenceAttribute(request: Request) {
+  return isLocalDevelopmentRequest(request)
+    ? `; Max-Age=${LOCAL_SESSION_MAX_AGE_SECONDS}`
+    : "";
+}
+
 export function encryptedSessionCookie(
   request: Request,
   cookieName: string,
   path: string,
   sealedSession: string,
 ) {
-  return `${cookieName}=${sealedSession}; Path=${path}; HttpOnly; SameSite=Strict${secureAttribute(request)}`;
+  return `${cookieName}=${sealedSession}; Path=${path}; HttpOnly; SameSite=Strict${persistenceAttribute(request)}${secureAttribute(request)}`;
 }
 
 export function clearEncryptedSessionCookie(

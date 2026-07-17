@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_PROJECT_ID,
   adjustAffinityProfile,
@@ -25,11 +25,17 @@ import type {
 import {
   DEFAULT_OPENAI_BASE_URL,
   DEFAULT_OPENAI_MODEL,
+  LOCAL_OPENAI_BASE_URL,
 } from "./api/ai/provider-config";
 import {
   claimLegacyStorage,
   storageKeysFor,
 } from "./local-user-storage";
+import {
+  parseMarkdown,
+  type MarkdownInline,
+  type MarkdownList,
+} from "./markdown";
 
 type View = "today" | "discover" | "library" | "reports";
 type AiMode = "openai" | "preview";
@@ -66,6 +72,30 @@ type AiRunMeta = {
   model: string | null;
   pdfDetail?: "low" | "high";
   usage?: AiUsage | null;
+  diagnostic?: AiDiagnostic;
+};
+
+type AiDiagnostic = {
+  id: string;
+  category: string;
+  stage: string;
+  retryable: boolean;
+  arxiv?: {
+    available: boolean;
+    status: number | null;
+    contentType: string | null;
+    bytes: number | null;
+    elapsedMs: number;
+  };
+  provider?: {
+    reachable: boolean | null;
+    status: number | null;
+    requestId: string | null;
+    transport: "json" | "sse";
+    elapsedMs: number;
+    attempts: number;
+    textProbe: "passed" | "failed" | "not-run";
+  };
 };
 
 type Paper = CandidatePaper & {
@@ -104,12 +134,16 @@ export type PaperOrbitViewer = {
   displayName: string;
   email: string;
   initials: string;
+  localDevelopment: boolean;
   role: "owner" | "manager" | "reader";
 };
 
 type ChatMessage = {
   role: "user" | "assistant";
   text: string;
+  meta?: AiRunMeta;
+  diagnostic?: AiDiagnostic;
+  retryPrompt?: string;
 };
 
 type ReadingReport = {
@@ -398,6 +432,9 @@ export default function PaperOrbitClient({
   viewer: PaperOrbitViewer;
 }) {
   const storage = useMemo(() => storageKeysFor(viewer.email), [viewer.email]);
+  const suggestedApiBaseUrl = viewer.localDevelopment
+    ? LOCAL_OPENAI_BASE_URL
+    : DEFAULT_OPENAI_BASE_URL;
   const [activeView, setActiveView] = useState<View>("today");
   const [candidatePool, setCandidatePool] = useState<Paper[]>(SEED_PAPERS);
   const [searchResults, setSearchResults] = useState<Paper[]>([]);
@@ -437,7 +474,7 @@ export default function PaperOrbitClient({
   });
   const [aiConnectionReady, setAiConnectionReady] = useState(false);
   const [aiConnectionBusy, setAiConnectionBusy] = useState(false);
-  const [apiBaseUrlInput, setApiBaseUrlInput] = useState(DEFAULT_OPENAI_BASE_URL);
+  const [apiBaseUrlInput, setApiBaseUrlInput] = useState(suggestedApiBaseUrl);
   const [apiModelInput, setApiModelInput] = useState(DEFAULT_OPENAI_MODEL);
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [aiConnectionMessage, setAiConnectionMessage] = useState("");
@@ -448,7 +485,6 @@ export default function PaperOrbitClient({
   const [researchConnectionBusy, setResearchConnectionBusy] = useState(false);
   const [semanticScholarKeyInput, setSemanticScholarKeyInput] = useState("");
   const [researchConnectionMessage, setResearchConnectionMessage] = useState("");
-  const [lastAiRun, setLastAiRun] = useState<AiRunMeta | null>(null);
   const [chat, setChat] = useState<ChatMessage[]>([COPILOT_WELCOME]);
   const [activeReport, setActiveReport] = useState<ReadingReport | null>(null);
   const [toast, setToast] = useState<ToastNotice | null>(null);
@@ -831,7 +867,7 @@ export default function PaperOrbitClient({
       const data = (await response.json()) as AiConnection & { error?: string };
       if (!response.ok) throw new Error(data.error || "无法读取 AI 连接状态");
       setAiConnection(data);
-      setApiBaseUrlInput(data.baseUrl ?? DEFAULT_OPENAI_BASE_URL);
+      setApiBaseUrlInput(data.baseUrl ?? suggestedApiBaseUrl);
       setApiModelInput(data.model ?? DEFAULT_OPENAI_MODEL);
       setAiMode(data.connected ? "openai" : "preview");
     } catch {
@@ -848,7 +884,7 @@ export default function PaperOrbitClient({
     const model = apiModelInput.trim();
     if (!apiKey || !baseUrl || !model || aiConnectionBusy) return;
     setAiConnectionBusy(true);
-    setAiConnectionMessage("正在验证兼容接口并建立加密会话…");
+    setAiConnectionMessage("正在检查 /models，并执行一次最小 /responses 真实推理…");
     try {
       const response = await fetch("/api/ai/session", {
         method: "POST",
@@ -862,8 +898,8 @@ export default function PaperOrbitClient({
       setApiBaseUrlInput(data.baseUrl ?? baseUrl);
       setApiModelInput(data.model ?? model);
       setAiMode("openai");
-      setAiConnectionMessage(`已连接 ${aiProviderLabel(data.baseUrl)}。之后的提问会把 arXiv PDF 交给该服务，并计入你的 API 用量。`);
-      showToast("全文 Copilot AI 服务已连接");
+      setAiConnectionMessage(`已通过 /models 与真实纯文本 /responses 推理并连接 ${aiProviderLabel(data.baseUrl)}。PDF 是独立能力：每篇提问时 PaperOrbit 会先核验 arXiv，再实测全文链路。`);
+      showToast("AI 文本链路已实测连接");
     } catch (error) {
       setAiConnectionMessage(
         error instanceof Error ? error.message : "连接 AI 服务失败，请稍后重试。",
@@ -885,10 +921,9 @@ export default function PaperOrbitClient({
       const data = (await response.json()) as AiConnection & { error?: string };
       if (!response.ok) throw new Error(data.error || "断开连接失败");
       setAiConnection(data);
-      setApiBaseUrlInput(data.baseUrl ?? DEFAULT_OPENAI_BASE_URL);
+      setApiBaseUrlInput(data.baseUrl ?? suggestedApiBaseUrl);
       setApiModelInput(data.model ?? DEFAULT_OPENAI_MODEL);
       setAiMode(data.connected ? "openai" : "preview");
-      setLastAiRun(null);
       setAiConnectionMessage(
         data.connected ? "个人会话已清除；当前仍使用站点配置的共享 OpenAI 连接。" : "个人 AI 服务会话已从此浏览器清除。",
       );
@@ -995,13 +1030,15 @@ export default function PaperOrbitClient({
   function selectCopilotPaper(id: string) {
     setCopilotPaperId(id);
     setChat([COPILOT_WELCOME]);
-    setLastAiRun(null);
   }
 
   async function askAI(question?: string) {
     const prompt = (question ?? aiInput).trim();
     if (!prompt || !copilotPaper || aiBusy) return;
-    const history = chat.slice(-8);
+    const history = chat
+      .filter((message) => !message.diagnostic)
+      .slice(-8)
+      .map(({ role, text }) => ({ role, text }));
     setAiInput("");
     setChat((current) => [...current, { role: "user", text: prompt }]);
     setAiBusy(true);
@@ -1025,24 +1062,50 @@ export default function PaperOrbitClient({
         model?: string | null;
         pdfDetail?: AiRunMeta["pdfDetail"];
         usage?: AiUsage | null;
+        diagnostic?: AiDiagnostic;
       };
       if (!response.ok || !data.answer || !data.mode) {
-        throw new Error(data.error || "这次全文分析没有完成。");
+        const diagnosticId = data.diagnostic?.id
+          ?? response.headers.get("x-paper-orbit-diagnostic-id")
+          ?? `client-${Date.now().toString(36)}`;
+        const diagnostic = data.diagnostic ?? {
+          id: diagnosticId,
+          category: "communication",
+          stage: "browser-api",
+          retryable: true,
+        };
+        setChat((current) => [
+          ...current,
+          {
+            role: "assistant",
+            text: data.error || "这次全文分析没有完成。",
+            diagnostic,
+            retryPrompt: diagnostic.retryable ? prompt : undefined,
+          },
+        ]);
+        return;
       }
       const answer = data.answer;
       const mode = data.mode;
       setAiMode(mode);
-      setLastAiRun({
+      const meta: AiRunMeta = {
         source: data.source ?? (mode === "openai" ? "fulltext-pdf" : "abstract-preview"),
         model: data.model ?? aiConnection.model,
         pdfDetail: data.pdfDetail,
         usage: data.usage,
-      });
+        diagnostic: data.diagnostic,
+      };
       setChat((current) => [
         ...current,
-        { role: "assistant", text: answer },
+        { role: "assistant", text: answer, meta },
       ]);
     } catch (error) {
+      const diagnostic: AiDiagnostic = {
+        id: `client-${Date.now().toString(36)}`,
+        category: "communication",
+        stage: "browser-api",
+        retryable: true,
+      };
       setChat((current) => [
         ...current,
         {
@@ -1051,6 +1114,8 @@ export default function PaperOrbitClient({
             error instanceof Error
               ? error.message
               : "这次全文分析没有完成，请稍后重试。",
+          diagnostic,
+          retryPrompt: prompt,
         },
       ]);
     } finally {
@@ -1062,7 +1127,6 @@ export default function PaperOrbitClient({
     if (aiBusy) return;
     setCopilotPaperId(paper.id);
     setChat([COPILOT_WELCOME]);
-    setLastAiRun(null);
     setAiBusy(true);
     showToast("正在生成阅读报告…");
     try {
@@ -1084,17 +1148,13 @@ export default function PaperOrbitClient({
         model?: string | null;
         pdfDetail?: AiRunMeta["pdfDetail"];
         usage?: AiUsage | null;
+        diagnostic?: AiDiagnostic;
       };
       if (!response.ok || !data.answer || !data.mode) {
-        throw new Error(data.error || "报告暂未生成。");
+        const suffix = data.diagnostic?.id ? `（诊断号 ${data.diagnostic.id}）` : "";
+        throw new Error(`${data.error || "报告暂未生成。"}${suffix}`);
       }
       setAiMode(data.mode);
-      setLastAiRun({
-        source: data.source ?? (data.mode === "openai" ? "fulltext-pdf" : "abstract-preview"),
-        model: data.model ?? aiConnection.model,
-        pdfDetail: data.pdfDetail,
-        usage: data.usage,
-      });
       const report: ReadingReport = {
         id: `${paper.id}-${Date.now()}`,
         paperId: paper.id,
@@ -1245,7 +1305,6 @@ export default function PaperOrbitClient({
             aiMode={aiMode}
             aiConnection={aiConnection}
             aiConnectionReady={aiConnectionReady}
-            lastAiRun={lastAiRun}
             paperFeedback={paperFeedback}
             onRefresh={() => void refreshDaily()}
             onToggleSaved={toggleSaved}
@@ -1365,7 +1424,11 @@ export default function PaperOrbitClient({
                 >
                   管理 API 连接
                 </button>
-                <a href="/signout-with-chatgpt?return_to=%2F">切换账号</a>
+                {viewer.localDevelopment ? (
+                  <span className="local-viewer-note">本地开发身份</span>
+                ) : (
+                  <a href="/signout-with-chatgpt?return_to=%2F">切换账号</a>
+                )}
               </div>
             </div>
             <div className="interest-grid">
@@ -1461,10 +1524,16 @@ export default function PaperOrbitClient({
               <div className={`ai-connection-card ${aiConnection.connected ? "connected" : ""}`}>
                 <span aria-hidden="true">{aiConnection.connected ? "✓" : "○"}</span>
                 <div>
-                  <strong>{aiConnection.connected ? "全文 AI 已连接" : "尚未连接真实 AI"}</strong>
+                  <strong>
+                    {aiConnection.connected
+                      ? aiConnection.source === "session"
+                        ? "AI 文本链路已实测连接"
+                        : "共享 AI 已配置"
+                      : "尚未连接真实 AI"}
+                  </strong>
                   <small>
                     {aiConnection.connected
-                      ? `${aiConnection.model ?? "未命名模型"} · ${aiProviderLabel(aiConnection.baseUrl)} · ${aiConnection.source === "session" ? "你的临时会话" : "仅管理账号的站点共享连接"}`
+                      ? `${aiConnection.model ?? "未命名模型"} · ${aiProviderLabel(aiConnection.baseUrl)} · ${aiConnection.source === "session" ? `${viewer.localDevelopment ? "本机加密会话" : "你的临时会话"} · /models + 纯文本 /responses 已实测 · PDF 逐篇核验` : "仅管理账号的站点共享连接"}`
                       : "普通用户未连接个人 Key 时只提供不消耗 token 的摘要预览。"}
                   </small>
                 </div>
@@ -1480,7 +1549,7 @@ export default function PaperOrbitClient({
                         type="url"
                         value={apiBaseUrlInput}
                         onChange={(event) => setApiBaseUrlInput(event.target.value)}
-                        placeholder="https://api.openai.com/v1"
+                        placeholder={suggestedApiBaseUrl}
                         autoComplete="url"
                         autoCapitalize="none"
                         autoCorrect="off"
@@ -1533,10 +1602,12 @@ export default function PaperOrbitClient({
                     </button>
                   </div>
                   <small>
-                    Base URL、模型和 Key 会一起保存在服务端加密的 HttpOnly 浏览器会话中；不写入 localStorage、数据库或仓库，关闭浏览器或连接满 12 小时后失效。地址必须是公网 HTTPS API 根路径。
+                    {viewer.localDevelopment
+                      ? "Base URL、模型和 Key 会以 AES-GCM 密文保存在仅属于 localhost 的 HttpOnly Cookie 中；本机解密密钥位于 Git 忽略的私有目录。它们不会进入 localStorage、数据库、仓库或生产站点，最长保留 90 天。当前可连接 http://127.0.0.1 或 http://localhost 回环 API；其他地址仍必须是公网 HTTPS。"
+                      : "Base URL、模型和 Key 会一起保存在服务端加密的 HttpOnly 浏览器会话中；不写入 localStorage、数据库或仓库，关闭浏览器或连接满 12 小时后失效。地址必须是公网 HTTPS API 根路径。"}
                   </small>
                   <small className="ai-provider-disclosure">
-                    兼容服务必须提供 <code>/models</code>、<code>/responses</code> 与 PDF <code>input_file</code>。提问时，该服务会收到论文 PDF 地址、你的问题、论文元数据和最近对话；请只连接你信任的服务商。
+                    点击验证时会先调用 <code>/models</code>，再执行一次极小的真实 <code>/responses</code> 纯文本推理，产生少量 token；这只能证明模型与文本接口可用，不等于已经验证 PDF。每次论文提问前，PaperOrbit 会先独立核验 arXiv PDF，再通过 <code>input_file</code> 交给模型；自定义服务优先使用流式 Responses 以减少长请求超时。服务会收到论文 PDF 地址、你的问题、论文元数据和最近对话，请只连接你信任的服务商。
                   </small>
                 </form>
               ) : (
@@ -1594,7 +1665,7 @@ export default function PaperOrbitClient({
                       {!researchConnectionReady
                         ? "正在检查连接状态…"
                         : researchConnection.semanticScholar.source === "session"
-                          ? "你的临时会话 · 引用与高影响引用"
+                          ? `${viewer.localDevelopment ? "本机加密会话" : "你的临时会话"} · 引用与高影响引用`
                           : researchConnection.semanticScholar.source === "shared"
                             ? "仅管理账号的站点共享连接"
                             : "无需 Key 也可使用，但高峰期可能受共享限流影响"}
@@ -1662,7 +1733,11 @@ export default function PaperOrbitClient({
             </section>
 
             <div className="modal-actions ai-modal-actions">
-              <span>所有个人 Key 均绑定当前 ChatGPT 登录邮箱，并在 12 小时后失效。</span>
+              <span>
+                {viewer.localDevelopment
+                  ? "所有个人 Key 只保存在本机加密会话中，最长 90 天，并可随时清除。"
+                  : "所有个人 Key 均绑定当前 ChatGPT 登录邮箱，并在 12 小时后失效。"}
+              </span>
               <button className="primary-button" type="button" onClick={() => setAiSettingsOpen(false)}>
                 完成
               </button>
@@ -1688,7 +1763,9 @@ export default function PaperOrbitClient({
             <div className="report-meta">
               {new Date(activeReport.createdAt).toLocaleString("zh-CN")} · {activeReport.mode === "openai" ? "OpenAI PDF 全文分析" : "摘要辅助模式"}
             </div>
-            <div className="report-content">{activeReport.content}</div>
+            <div className="report-content markdown-body">
+              <MarkdownText text={activeReport.content} />
+            </div>
             <div className="modal-actions">
               <button className="text-button" type="button" onClick={() => navigator.clipboard.writeText(activeReport.content)}>
                 复制正文
@@ -1864,7 +1941,6 @@ type TodayViewProps = {
   aiMode: AiMode;
   aiConnection: AiConnection;
   aiConnectionReady: boolean;
-  lastAiRun: AiRunMeta | null;
   paperFeedback: PaperFeedback[];
   onRefresh: () => void;
   onToggleSaved: (id: string) => void;
@@ -1878,7 +1954,141 @@ type TodayViewProps = {
   onDeepRead: () => void;
 };
 
+function formatPdfBytes(bytes: number | null | undefined) {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) return "大小未知";
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function renderMarkdownInline(nodes: MarkdownInline[], keyPrefix: string) {
+  return nodes.map((node, index) => {
+    const key = `${keyPrefix}-${index}`;
+    switch (node.type) {
+      case "strong":
+        return <strong key={key}>{renderMarkdownInline(node.children, key)}</strong>;
+      case "em":
+        return <em key={key}>{renderMarkdownInline(node.children, key)}</em>;
+      case "code":
+        return <code key={key}>{node.text}</code>;
+      case "math":
+        return <code key={key} className="md-math-inline">{node.tex}</code>;
+      case "link":
+        return (
+          <a key={key} href={node.href} target="_blank" rel="noopener noreferrer">
+            {renderMarkdownInline(node.children, key)}
+          </a>
+        );
+      default:
+        return <Fragment key={key}>{node.text}</Fragment>;
+    }
+  });
+}
+
+function renderMarkdownLines(lines: MarkdownInline[][], keyPrefix: string) {
+  return lines.map((line, index) => (
+    <Fragment key={`${keyPrefix}-l${index}`}>
+      {index > 0 ? <br /> : null}
+      {renderMarkdownInline(line, `${keyPrefix}-l${index}`)}
+    </Fragment>
+  ));
+}
+
+function MarkdownListView({ list, keyPrefix }: { list: MarkdownList; keyPrefix: string }) {
+  const ListTag = list.ordered ? "ol" : "ul";
+  return (
+    <ListTag start={list.ordered && list.start !== 1 ? list.start : undefined}>
+      {list.items.map((item, index) => {
+        const itemKey = `${keyPrefix}-i${index}`;
+        return (
+          <li key={itemKey}>
+            {renderMarkdownLines(item.lines, itemKey)}
+            {item.child ? <MarkdownListView list={item.child} keyPrefix={`${itemKey}c`} /> : null}
+          </li>
+        );
+      })}
+    </ListTag>
+  );
+}
+
+function MarkdownText({ text }: { text: string }) {
+  const blocks = useMemo(() => parseMarkdown(text), [text]);
+  return (
+    <>
+      {blocks.map((block, index) => {
+        const key = `md-${index}`;
+        switch (block.type) {
+          case "heading": {
+            const HeadingTag = `h${Math.min(6, block.level + 2)}` as "h3" | "h4" | "h5" | "h6";
+            return <HeadingTag key={key}>{renderMarkdownInline(block.children, key)}</HeadingTag>;
+          }
+          case "paragraph":
+            return <p key={key}>{renderMarkdownLines(block.lines, key)}</p>;
+          case "quote":
+            return <blockquote key={key}>{renderMarkdownLines(block.lines, key)}</blockquote>;
+          case "code":
+            return (
+              <pre key={key}>
+                <code>{block.text}</code>
+              </pre>
+            );
+          case "math":
+            return <pre key={key} className="md-math">{block.tex}</pre>;
+          case "rule":
+            return <hr key={key} />;
+          case "table":
+            return (
+              <div key={key} className="md-table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      {block.header.map((cell, column) => (
+                        <th key={`${key}-h${column}`}>
+                          {renderMarkdownInline(cell, `${key}-h${column}`)}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {block.rows.map((row, rowIndex) => (
+                      <tr key={`${key}-r${rowIndex}`}>
+                        {row.map((cell, column) => (
+                          <td key={`${key}-r${rowIndex}c${column}`}>
+                            {renderMarkdownInline(cell, `${key}-r${rowIndex}c${column}`)}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          case "list":
+            return <MarkdownListView key={key} list={block} keyPrefix={key} />;
+          default:
+            return null;
+        }
+      })}
+    </>
+  );
+}
+
+function diagnosticTitle(category: string) {
+  if (category === "arxiv") return "arXiv PDF 获取故障";
+  if (category === "authentication") return "API 身份验证失败";
+  if (category === "quota") return "AI 服务额度或限流";
+  if (category === "provider-pdf") return "AI 服务的 PDF 能力不兼容";
+  if (category === "compatibility") return "AI 接口兼容性故障";
+  if (category === "communication") return "浏览器与 PaperOrbit 通讯中断";
+  return "AI 全文处理故障";
+}
+
 function TodayView(props: TodayViewProps) {
+  const chatWindowRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const chatWindow = chatWindowRef.current;
+    if (chatWindow) chatWindow.scrollTop = chatWindow.scrollHeight;
+  }, [props.chat, props.aiBusy]);
+
   const completedThisWeek = Math.min(props.readIds.size, 10);
   const progress = Math.min(100, Math.max(10, completedThisWeek * 10));
   const quickPrompts = ["用三句话解释核心贡献", "和同领域代表工作比较", "指出最值得复现的实验"];
@@ -1897,13 +2107,18 @@ function TodayView(props: TodayViewProps) {
   const edition = Math.floor(
     (today.getTime() - startOfYear.getTime()) / 86_400_000,
   );
+  const fulltextVerified = props.chat.some(
+    (message) => message.meta?.source === "fulltext-pdf",
+  );
   const aiStatusLabel = !props.aiConnectionReady
     ? "检查中"
     : !props.aiConnection.connected
       ? "AI 未连接"
       : props.aiMode === "preview"
         ? "安全降级"
-        : `${props.aiConnection.model ?? "OpenAI"} · 全文`;
+        : fulltextVerified
+          ? `${props.aiConnection.model ?? "OpenAI"} · 全文已验证`
+          : `${props.aiConnection.model ?? "OpenAI"} · 文本已验证`;
 
   return (
     <div className="page-wrap">
@@ -1997,35 +2212,84 @@ function TodayView(props: TodayViewProps) {
               ))}
             </select>
 
-            <div className="chat-window" aria-live="polite">
+            <div className="chat-window" aria-live="polite" ref={chatWindowRef}>
               {props.chat.slice(-6).map((message, index) => (
                 <div key={`${message.role}-${index}`} className={`chat-message ${message.role}`}>
                   <span>{message.role === "assistant" ? "PO" : "YOU"}</span>
-                  <p>{message.text}</p>
+                  <div className="chat-message-body">
+                    {message.role === "assistant" ? (
+                      <div className="markdown-body">
+                        <MarkdownText text={message.text} />
+                      </div>
+                    ) : (
+                      <p>{message.text}</p>
+                    )}
+                    {message.meta ? (
+                      <div className={`ai-run-meta ${message.meta.source === "fulltext-pdf" ? "fulltext" : "preview"}`}>
+                        <span>
+                          {message.meta.source === "fulltext-pdf" ? "PDF 全文" : "摘要预览"}
+                          {message.meta.model ? ` · ${message.meta.model}` : ""}
+                          {message.meta.pdfDetail === "high" ? " · 图表增强" : ""}
+                        </span>
+                        {message.meta.usage ? (
+                          <small>
+                            本次输入 {message.meta.usage.inputTokens.toLocaleString("zh-CN")} · 输出 {message.meta.usage.outputTokens.toLocaleString("zh-CN")} tokens
+                          </small>
+                        ) : null}
+                        {message.meta.diagnostic?.arxiv?.available ? (
+                          <small>
+                            arXiv 已核验 · {formatPdfBytes(message.meta.diagnostic.arxiv.bytes)}
+                            {message.meta.diagnostic.provider?.transport === "sse" ? " · 流式传输" : ""}
+                            {(message.meta.diagnostic.provider?.attempts ?? 1) > 1
+                              ? ` · 自动恢复 ${message.meta.diagnostic.provider?.attempts} 次尝试`
+                              : ""}
+                          </small>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {message.diagnostic ? (
+                      <div className="ai-diagnostic" role="status">
+                        <strong>{diagnosticTitle(message.diagnostic.category)}</strong>
+                        <ul>
+                          {message.diagnostic.arxiv ? (
+                            <li>
+                              arXiv：{message.diagnostic.arxiv.available
+                                ? `PDF 可读取（${formatPdfBytes(message.diagnostic.arxiv.bytes)}）`
+                                : `PDF 未通过核验${message.diagnostic.arxiv.status ? `（HTTP ${message.diagnostic.arxiv.status}）` : ""}`}
+                            </li>
+                          ) : null}
+                          {message.diagnostic.provider ? (
+                            <li>
+                              AI 服务：{message.diagnostic.provider.textProbe === "passed"
+                                ? "文本连接正常，但本次全文处理失败"
+                                : message.diagnostic.provider.textProbe === "failed"
+                                  ? "文本探针也失败，服务或上游当前不可用"
+                                  : message.diagnostic.provider.status
+                                    ? `全文请求返回 HTTP ${message.diagnostic.provider.status}`
+                                    : "未完成全文请求"}
+                            </li>
+                          ) : null}
+                          <li>诊断号：{message.diagnostic.id}</li>
+                        </ul>
+                        {message.retryPrompt && message.diagnostic.retryable ? (
+                          <button type="button" onClick={() => props.onAskAi(message.retryPrompt)} disabled={props.aiBusy}>
+                            重试本次问题
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               ))}
               {props.aiBusy ? (
                 <div className="chat-message assistant typing">
                   <span>PO</span>
-                  <p>正在把 arXiv PDF 全文交给模型阅读<span aria-hidden="true">…</span></p>
+                  <p>正在核验 arXiv PDF 并通过稳定链路交给模型；长论文可能需要 1–3 分钟<span aria-hidden="true">…</span></p>
                 </div>
               ) : null}
             </div>
 
-            {props.lastAiRun ? (
-              <div className={`ai-run-meta ${props.lastAiRun.source === "fulltext-pdf" ? "fulltext" : "preview"}`}>
-                <span>
-                  {props.lastAiRun.source === "fulltext-pdf" ? "PDF 全文" : "摘要预览"}
-                  {props.lastAiRun.model ? ` · ${props.lastAiRun.model}` : ""}
-                  {props.lastAiRun.pdfDetail === "high" ? " · 图表增强" : ""}
-                </span>
-                {props.lastAiRun.usage ? (
-                  <small>
-                    本次输入 {props.lastAiRun.usage.inputTokens.toLocaleString("zh-CN")} · 输出 {props.lastAiRun.usage.outputTokens.toLocaleString("zh-CN")} tokens
-                  </small>
-                ) : null}
-              </div>
-            ) : !props.aiConnection.connected ? (
+            {!props.aiConnection.connected ? (
               <p className="ai-preview-note">未连接时不会消耗 token；返回的是摘要预览，不是模型回答。</p>
             ) : null}
 
@@ -2051,7 +2315,19 @@ function TodayView(props: TodayViewProps) {
                 id="ai-question"
                 value={props.aiInput}
                 onChange={(event) => props.onAiInput(event.target.value)}
-                placeholder="问这篇论文的方法、公式、实验或局限…"
+                onKeyDown={(event) => {
+                  // Enter sends; Shift+Enter keeps the newline. An Enter that
+                  // confirms an IME composition must never send the draft.
+                  if (
+                    event.key === "Enter"
+                    && !event.shiftKey
+                    && !event.nativeEvent.isComposing
+                  ) {
+                    event.preventDefault();
+                    props.onAskAi();
+                  }
+                }}
+                placeholder="问这篇论文的方法、公式、实验或局限…（Enter 发送，Shift+Enter 换行）"
                 rows={3}
               />
               <button type="submit" disabled={!props.aiInput.trim() || props.aiBusy} aria-label="发送问题">
