@@ -1,10 +1,12 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { localDevelopmentIdentityFromHeaders } from "./local-development";
 
 export type ChatGPTUser = {
   displayName: string;
   email: string;
   fullName: string | null;
+  localDevelopment: boolean;
 };
 
 const USER_EMAIL_HEADER = "oai-authenticated-user-email";
@@ -19,7 +21,19 @@ const CALLBACK_PATH = "/callback";
 export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
   const requestHeaders = await headers();
   const email = requestHeaders.get(USER_EMAIL_HEADER);
-  if (!email) return null;
+  if (!email) {
+    // Server Components do not expose the complete Request URL here. Local
+    // identity therefore accepts only the unforgeable marker added by the
+    // loopback-only Vite development ingress.
+    const localIdentity = localDevelopmentIdentityFromHeaders(requestHeaders);
+    if (!localIdentity) return null;
+    return {
+      displayName: localIdentity.fullName,
+      email: localIdentity.email,
+      fullName: localIdentity.fullName,
+      localDevelopment: true,
+    };
+  }
 
   const encodedFullName = requestHeaders.get(USER_FULL_NAME_HEADER);
   const fullName =
@@ -32,6 +46,7 @@ export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
     displayName: fullName ?? email,
     email,
     fullName,
+    localDevelopment: false,
   };
 }
 
