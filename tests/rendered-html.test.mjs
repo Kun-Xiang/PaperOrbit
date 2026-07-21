@@ -147,12 +147,13 @@ test("server-renders the Paper Orbit product shell", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>Paper Orbit — 每日论文阅读与 AI 研究助手<\/title>/i);
+  assert.match(html, /<html[^>]*lang="en"/i);
+  assert.match(html, /<title>Paper Orbit — Daily Paper Reading and AI Research Copilot<\/title>/i);
   assert.match(html, /Paper Orbit/);
-  assert.match(html, /今天值得读的/);
-  assert.match(html, />10<\/em> 篇/);
+  assert.match(html, /<em>10<\/em> papers worth reading today/i);
   assert.match(html, /Paper Copilot/);
-  assert.match(html, /搜索 arXiv/);
+  assert.match(html, /Search arXiv/);
+  assert.doesNotMatch(html, /[\u3400-\u9fff]/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Codex is working/i);
 });
 
@@ -170,7 +171,7 @@ test("allows every signed-in ChatGPT account while preserving privileged roles",
   assert.match(outsiderHtml, /outsider@example\.com/);
   assert.match(outsiderHtml, /READER/);
   assert.match(outsiderHtml, /Paper Copilot/);
-  assert.doesNotMatch(outsiderHtml, /这个账号尚未获得访问权限/);
+  assert.doesNotMatch(outsiderHtml, /not authorized for Paper Orbit/i);
 
   const anonymousApi = await request("/api/arxiv?mode=feed", null);
   assert.equal(anonymousApi.status, 401);
@@ -431,7 +432,7 @@ test("feed returns a generic public candidate pool without consuming personal qu
   assert.doesNotMatch(arxivUrl.href, /PRIVATE_TOPIC|PRIVATE_SIGNAL|PRIVATE_FEEDBACK/);
 });
 
-test("keeps Copilot output in one language without copying the abstract", async () => {
+test("defaults Copilot reports and chats to English without copying the abstract", async () => {
   const abstract =
     "We introduce a deliberately distinctive sequence of source words that should never be copied into the generated reading report. Our framework combines visual observations with actions and predicts future latent states under several training objectives. Extensive experiments compare the method with strong baselines across multiple settings.";
   const paper = {
@@ -449,19 +450,16 @@ test("keeps Copilot output in one language without copying the abstract", async 
     body: JSON.stringify({
       paper,
       action: "report",
-      prompt: "请用中文生成报告，不要复述摘要。",
+      prompt: "Write a structured reading report without reproducing the abstract.",
     }),
   });
   assert.equal(reportResponse.status, 200);
   const report = await reportResponse.json();
   assert.equal(report.mode, "preview");
   assert.equal(report.source, "abstract-preview");
-  assert.match(report.answer, /摘要辅助模式/);
+  assert.match(report.answer, /summary-assisted mode/i);
+  assert.doesNotMatch(report.answer, /[\u3400-\u9fff]/);
   assert.doesNotMatch(report.answer, /deliberately distinctive sequence/i);
-  assert.doesNotMatch(
-    report.answer,
-    /(?:[A-Za-z][A-Za-z0-9'-]*[\s,.;:()—-]+){11}[A-Za-z][A-Za-z0-9'-]*/,
-  );
 
   const chatResponse = await request("/api/ai", "xiangk123@gmail.com", {
     method: "POST",
@@ -477,6 +475,29 @@ test("keeps Copilot output in one language without copying the abstract", async 
   assert.equal(chat.mode, "preview");
   assert.doesNotMatch(chat.answer, /[\u3400-\u9fff]/);
   assert.doesNotMatch(chat.answer, /deliberately distinctive sequence/i);
+});
+
+test("matches a Simplified Chinese request with a Simplified Chinese preview", async () => {
+  const response = await request("/api/ai", "reader@example.com", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      paper: {
+        id: "2607.00001",
+        title: "Language Matching Test Paper",
+        summary: "A short abstract about a representation-learning mechanism.",
+        category: "cs.RO",
+        tags: ["Physical AI"],
+      },
+      action: "chat",
+      prompt: "请用简体中文解释核心机制，不要复述摘要。",
+    }),
+  });
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.mode, "preview");
+  assert.match(result.answer, /可以把机制拆成/);
+  assert.match(result.answer, /[\u3400-\u9fff]{10}/);
 });
 
 test("connects a private OpenAI session and sends only the validated arXiv PDF", async () => {
@@ -511,7 +532,7 @@ test("connects a private OpenAI session and sends only the validated arXiv PDF",
       }
       return Response.json({
         output_text:
-          "论文的核心机制由三个阶段构成：先编码观测，再用联合目标学习动态表示，最后在推理阶段产生动作。正文证据需要结合方法节、实验节和对应图表核验；这里的测试回答用于确认 PDF 全文链路已经生效。",
+          "The paper's core mechanism has three stages: it encodes observations, learns a dynamic representation with a joint objective, and produces actions at inference time. The method and experiment sections provide the evidence needed to verify this full-PDF response path.",
         usage: {
           input_tokens: 1234,
           output_tokens: 87,
@@ -572,6 +593,7 @@ test("connects a private OpenAI session and sends only the validated arXiv PDF",
       title: "A Full Text Test Paper",
       authors: ["Researcher One"],
       summary: "A short abstract used only as supplemental metadata.",
+      zhSummary: "LEGACY_SUMMARY_MUST_NOT_REACH_PROVIDER",
       category: "cs.RO",
       tags: ["Physical AI"],
     };
@@ -581,8 +603,8 @@ test("connects a private OpenAI session and sends only the validated arXiv PDF",
       body: JSON.stringify({
         paper,
         action: "chat",
-        prompt: "请解释图表中的核心机制。",
-        history: [{ role: "user", text: "先概括研究问题。" }],
+        prompt: "Explain the core mechanism shown in the figures.",
+        history: [{ role: "user", text: "First summarize the research question." }],
       }),
     });
     assert.equal(aiResponse.status, 200);
@@ -614,7 +636,13 @@ test("connects a private OpenAI session and sends only the validated arXiv PDF",
     );
     assert.equal(payload.input[0].content[0].detail, "high");
     assert.equal(payload.input[0].content[1].type, "input_text");
-    assert.match(payload.input[0].content[1].text, /先概括研究问题/);
+    assert.match(payload.input[0].content[1].text, /First summarize the research question/);
+    assert.match(payload.instructions, /Write the entire response in natural English/);
+    assert.doesNotMatch(payload.instructions, /[\u3400-\u9fff]/);
+    assert.doesNotMatch(
+      JSON.stringify(payload),
+      /zhSummary|chineseSummary|LEGACY_SUMMARY_MUST_NOT_REACH_PROVIDER/,
+    );
 
     const invalidResponse = await request("/api/ai", readerEmail, {
       method: "POST",
@@ -672,7 +700,7 @@ test("uses a reader-owned OpenAI-compatible Base URL, short key, and custom mode
       const payload = requestPayload(init);
       assert.equal(payload.stream, true);
       const outputText =
-        "这篇论文首先定义研究问题，再由核心表征模块提取状态，随后通过训练目标约束动态变化，最后在实验中验证主要组件。回答来自自定义兼容服务，用于确认端点、模型和全文输入均按个人会话隔离。";
+        "The paper first defines its research question, then extracts state with a core representation module, constrains the dynamics through its training objective, and validates the main components experimentally. This compatible-provider response verifies that the endpoint, model, and full-text input remain isolated to the personal session.";
       return new Response(
         `event: response.completed\ndata: ${JSON.stringify({
           type: "response.completed",
@@ -742,7 +770,7 @@ test("uses a reader-owned OpenAI-compatible Base URL, short key, and custom mode
           tags: ["Reasoning"],
         },
         action: "chat",
-        prompt: "请解释这篇论文的核心机制。",
+        prompt: "Explain this paper's core mechanism.",
       }),
     });
     assert.equal(aiResponse.status, 200);
@@ -808,7 +836,7 @@ test("attributes an arXiv PDF failure before sending any full-text model request
           title: "Unavailable arXiv PDF",
           summary: "Metadata remains available.",
         },
-        prompt: "请阅读全文。",
+        prompt: "Read the full paper.",
       }),
     });
     assert.equal(aiResponse.status, 502);
@@ -884,7 +912,7 @@ test("rejects arXiv content whose signature or complete size cannot be verified"
           title: "Unverified arXiv PDF",
           summary: "Metadata remains available.",
         },
-        prompt: "请阅读全文。",
+        prompt: "Read the full paper.",
       }),
     });
 
@@ -954,7 +982,7 @@ test("attributes a provider full-text timeout while proving arXiv and text Respo
           title: "Slow full-text paper",
           summary: "A short summary.",
         },
-        prompt: "请分析全文。",
+        prompt: "Analyze the full paper.",
       }),
     });
     assert.equal(aiResponse.status, 504);
@@ -967,8 +995,8 @@ test("attributes a provider full-text timeout while proving arXiv and text Respo
     assert.equal(result.diagnostic.provider.textProbe, "passed");
     assert.equal(result.diagnostic.provider.reachable, true);
     assert.equal(result.diagnostic.provider.attempts, 2);
-    assert.match(result.error, /arXiv PDF 当前可读取/);
-    assert.match(result.error, /文本探针同时通过/);
+    assert.match(result.error, /arXiv PDF is currently accessible/);
+    assert.match(result.error, /minimal text probe also passed/);
   });
 
   assert.equal(fulltextCalls, 2, "fast 504 failures receive one bounded retry");
@@ -1006,7 +1034,7 @@ test("recovers automatically from one fast compatible-provider gateway failure",
       return new Response(
         `event: response.output_text.delta\ndata: ${JSON.stringify({
           type: "response.output_text.delta",
-          delta: "模型在一次有界重试后成功读取全文，并返回了可核验的论文分析。",
+          delta: "After one bounded retry, the model read the full paper and returned a verifiable analysis.",
         })}\n\nevent: response.completed\ndata: ${JSON.stringify({
           type: "response.completed",
           response: {
@@ -1035,7 +1063,7 @@ test("recovers automatically from one fast compatible-provider gateway failure",
           title: "Retry recovery paper",
           summary: "A short summary.",
         },
-        prompt: "请解释核心机制。",
+        prompt: "Explain the core mechanism.",
       }),
     });
     assert.equal(aiResponse.status, 200);
@@ -1097,7 +1125,7 @@ test("cancels an abnormally large full-text provider response", async () => {
           title: "Oversized provider response paper",
           summary: "A short summary.",
         },
-        prompt: "请分析全文。",
+        prompt: "Analyze the full paper.",
       }),
     });
     assert.equal(aiResponse.status, 502);
@@ -1159,7 +1187,7 @@ test("never exposes a provider request ID containing the personal API key", asyn
             title: "Request ID redaction paper",
             summary: "A short summary.",
           },
-          prompt: "请分析全文。",
+          prompt: "Analyze the full paper.",
         }),
       });
       assert.equal(aiResponse.status, 502);
@@ -1205,7 +1233,7 @@ test("rejects a connection when a compatible provider ignores non-stream Respons
     assert.equal(connectResponse.headers.get("set-cookie"), null);
     const error = await connectResponse.json();
     assert.equal(error.code, "OPENAI_RESPONSES_INCOMPATIBLE");
-    assert.match(error.error, /连接未保存/);
+    assert.match(error.error, /connection was not saved/);
   });
 });
 
@@ -1235,7 +1263,7 @@ test("does not save a session when the live Responses inference fails", async ()
     assert.equal(response.headers.get("set-cookie"), null);
     const error = await response.json();
     assert.equal(error.code, "OPENAI_LIVE_CHECK_FAILED");
-    assert.match(error.error, /上游路由/);
+    assert.match(error.error, /upstream routing/);
   });
 });
 
@@ -1397,7 +1425,7 @@ test("allows a loopback AI endpoint only in explicit local development mode", as
         }
         return Response.json({
           output_text:
-            "本地模型读取论文全文后，先识别问题设定，再分析方法模块之间的数据流，最后结合实验与消融结果说明结论边界。这段回答用于验证本机回环服务能够完成完整的 Paper Copilot 请求链路。",
+            "After reading the full paper, the local model identifies the problem setting, analyzes data flow between method components, and uses experiments and ablations to define the conclusions' evidence boundaries. This response verifies the complete Paper Copilot request path through a loopback service.",
           usage: {
             input_tokens: 210,
             output_tokens: 46,
@@ -1487,7 +1515,7 @@ test("allows a loopback AI endpoint only in explicit local development mode", as
               tags: ["Local AI"],
             },
             action: "chat",
-            prompt: "请解释论文的核心机制。",
+            prompt: "Explain the paper's core mechanism.",
           }),
         },
         origin,
@@ -1573,7 +1601,7 @@ test("local development mode chats through the shared .env credential", async ()
         assert.equal(requestPayload(init).model, "gpt-5.6-terra");
         return Response.json({
           output_text:
-            "本地共享凭据读取论文全文后，先梳理研究问题与方法结构，再对照实验与消融结果说明证据边界。这段回答用于验证 .env 共享凭据能够完成完整的 Paper Copilot 请求链路。",
+            "After reading the full paper through the local shared credential, the model organizes the research question and method structure, then uses experiments and ablations to explain the evidence boundaries. This response verifies the complete Paper Copilot request path through the .env credential.",
           usage: {
             input_tokens: 190,
             output_tokens: 42,
@@ -1617,7 +1645,7 @@ test("local development mode chats through the shared .env credential", async ()
               tags: ["Local AI"],
             },
             action: "chat",
-            prompt: "请解释论文的核心机制。",
+            prompt: "Explain the paper's core mechanism.",
           }),
         },
         origin,
@@ -1826,6 +1854,20 @@ test("ships ten fallback papers and the local-first recommendation pipeline", as
     readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
   ]);
 
+  for (const [name, source] of [
+    ["client", client],
+    ["layout", layout],
+    ["AI session route", sessionRoute],
+    ["arXiv session route", researchSessionRoute],
+    ["recommendation module", recommendation],
+  ]) {
+    assert.doesNotMatch(
+      source,
+      /[\u3400-\u9fff]/,
+      `${name} must keep its unconditional user-facing surfaces in English`,
+    );
+  }
+
   assert.match(client, /const DAILY_PAPER_COUNT = 10/);
   assert.equal((client.match(/id: "2607\./g) ?? []).length, 10);
   assert.match(localUserStorage, /paper-orbit:user:\$\{scope\}/);
@@ -1855,19 +1897,26 @@ test("ships ten fallback papers and the local-first recommendation pipeline", as
   assert.match(client, /fetch\("\/api\/arxiv\?mode=feed"/);
   assert.match(client, /rankPapersLocally/);
   assert.match(client, /recommendation\.signals\.relevance/);
-  assert.match(client, /为什么推荐/);
-  assert.match(client, /精确短语/);
-  assert.match(client, /上一页/);
+  assert.match(client, /Why this paper/);
+  assert.match(client, /Exact phrase/);
+  assert.match(client, /← Previous/);
   assert.match(client, /wasSaved \? -0\.6 : 1/);
   assert.match(client, /learnFromPaper\(paper, 1\.5\)/);
   assert.match(client, /learnFromPaper\(paper, 2\)/);
+  assert.match(client, /Respond in English\. Read the full PDF/);
+  assert.match(client, /Respond in English\. Analyze this paper in depth/);
+  assert.match(client, /function paperPayload/);
+  assert.match(client, /delete payload\.zhSummary/);
+  assert.match(client, /paper: paperPayload\(copilotPaper\)/);
+  assert.match(client, /paper: paperPayload\(paper\)/);
   assert.doesNotMatch(client, /Math\.random/);
   assert.match(searchQuery, /title: "ti"/);
   assert.match(searchQuery, /author: "au"/);
   assert.match(searchQuery, /abstract: "abs"/);
-  assert.match(aiRoute, /不得连续复用来源中十二个或更多英文单词/);
+  assert.match(aiRoute, /do not reuse twelve or more consecutive English words from the source/);
   assert.match(aiRoute, /violatesOutputPolicy/);
   assert.match(aiRoute, /repairInstructions/);
+  assert.doesNotMatch(aiRoute, /chineseSummary|paper\.zhSummary/);
   assert.match(aiRoute, /type: "input_file"/);
   assert.match(aiRoute, /file_url: pdfUrl/);
   assert.match(aiRoute, /https:\/\/arxiv\.org\/pdf\//);
@@ -1899,6 +1948,7 @@ test("ships ten fallback papers and the local-first recommendation pipeline", as
   assert.match(sessionRoute, /PAPER_ORBIT_OK/);
   assert.match(sessionRoute, /max_output_tokens: 16/);
   assert.match(sessionRoute, /OPENAI_LIVE_CHECK_FAILED/);
+  assert.match(sessionRoute, /Enter a valid API key/);
   assert.match(aiSession, /validation: "responses"/);
   assert.match(sessionRoute, /redirect: "manual"/);
   assert.match(sessionRoute, /readBoundedResponseJson/);
@@ -1919,23 +1969,24 @@ test("ships ten fallback papers and the local-first recommendation pipeline", as
   assert.match(researchSession, /isPaperOrbitPrivilegedEmail/);
   assert.match(researchSessionRoute, /api\.semanticscholar\.org/);
   assert.match(researchSessionRoute, /x-api-key/);
-  assert.match(client, /连接你的研究服务/);
-  assert.match(client, /OpenAI 兼容 API/);
+  assert.match(researchSessionRoute, /Enter a valid Semantic Scholar API key/);
+  assert.match(client, /Connect your research services/);
+  assert.match(client, /OpenAI-compatible API/);
   assert.match(client, /API Base URL/);
-  assert.match(client, /不限 sk- 前缀/);
-  assert.match(client, /arXiv 公开 API/);
+  assert.match(client, /no sk- prefix required/);
+  assert.match(client, /Public arXiv API/);
   assert.match(client, /Semantic Scholar API Key/);
-  assert.match(client, /PDF 全文/);
-  assert.match(client, /AI 文本链路已实测连接/);
-  assert.match(client, /PDF 逐篇核验/);
-  assert.match(client, /重试本次问题/);
+  assert.match(client, /Full PDF/);
+  assert.match(client, /AI text path verified and connected/);
+  assert.match(client, /PDF checked per paper/);
+  assert.match(client, /Retry this question/);
   assert.doesNotMatch(client, /lastAiRun|setLastAiRun/);
   assert.match(client, /message\.meta/);
   assert.match(client, /message\.diagnostic/);
-  assert.match(client, /这只能证明模型与文本接口可用，不等于已经验证 PDF/);
+  assert.match(client, /This proves only that the model and text endpoint work; it does not validate PDF support/);
   assert.match(readme, /Responses `\/responses`/);
   assert.match(readme, /Orbit v3 Local/);
-  assert.match(readme, /90 天半衰期/);
+  assert.match(readme, /90-day half-life/);
   assert.match(envExample, /PAPER_ORBIT_SESSION_SECRET=/);
   assert.deepEqual(JSON.parse(hosting), {
     project_id: "appgprj_6a54adc87188819197397fa1dc842363",
@@ -1943,7 +1994,10 @@ test("ships ten fallback papers and the local-first recommendation pipeline", as
   assert.match(recommendation, /relevance: 0\.42/);
   assert.match(recommendation, /similarity: 0\.16/);
   assert.match(recommendation, /rankPapersLocally/);
+  assert.match(recommendation, /Marked relevant/);
+  assert.match(recommendation, /Diversity exploration/);
   assert.doesNotMatch(recommendation, /Math\.random/);
-  assert.match(layout, /Paper Orbit/);
+  assert.match(layout, /Paper Orbit — Daily Paper Reading and AI Research Copilot/);
+  assert.match(layout, /<html lang="en">/);
   assert.doesNotMatch(client, /_sites-preview|SkeletonPreview/);
 });

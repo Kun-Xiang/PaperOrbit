@@ -13,6 +13,7 @@ import {
   dedupePapers,
   loadAffinityProfile,
   parseFeedbackStorage,
+  rankPapers,
   rankPapersLocally,
   upsertPaperFeedback,
 } from "../app/api/arxiv/recommendation.ts";
@@ -49,6 +50,15 @@ function paper(index, overrides = {}) {
 }
 
 const now = new Date("2026-07-16T00:00:00.000Z");
+
+function assertEnglishRecommendationReason(reason, expected) {
+  assert.equal(
+    /[\u3400-\u9fff]/u.test(reason),
+    false,
+    `recommendation reason should not contain Han characters: ${reason}`,
+  );
+  assert.match(reason, expected);
+}
 
 function memoryStorage(entries = {}) {
   const values = new Map(Object.entries(entries));
@@ -311,6 +321,111 @@ test("local ranking is deterministic and never uses randomness", () => {
   const left = rankPapersLocally(...args);
   const right = rankPapersLocally(...args);
   assert.deepEqual(left, right);
+});
+
+test("default recommendation reasons use English copy without Han characters", () => {
+  const [ranked] = rankPapersLocally(
+    [paper(0)],
+    [],
+    ["Robot Learning"],
+    { version: 3, signals: {} },
+    [],
+    new Map(),
+    1,
+    { now },
+  );
+
+  assertEnglishRecommendationReason(
+    ranked.recommendation.reason,
+    /^Matches Robot Learning(?: · |$)/,
+  );
+});
+
+test("exact feedback recommendation reasons use English labels without Han characters", () => {
+  const target = paper(0);
+  const cases = [
+    ["relevant", /^Marked relevant · /],
+    ["not_relevant", /^Downranked by “Not relevant” feedback · /],
+    ["too_broad", /^Downranked by “Too broad” feedback · /],
+    ["already_knew", /^Already read \/ known · /],
+  ];
+
+  for (const [kind, expected] of cases) {
+    const [ranked] = rankPapersLocally(
+      [target],
+      [],
+      ["Robot Learning"],
+      { version: 3, signals: {} },
+      upsertPaperFeedback([], target.id, kind, now),
+      new Map(),
+      1,
+      { now },
+    );
+    assertEnglishRecommendationReason(ranked.recommendation.reason, expected);
+  }
+});
+
+test("server and local exploration reasons use English copy without Han characters", () => {
+  const published = "2026-07-15T00:00:00.000Z";
+  const similarPaper = (index) => paper(index, {
+    title: "Robot Learning Architecture",
+    published,
+    updated: published,
+    category: "cs.RO",
+    categories: ["cs.RO"],
+    tags: ["Robot Learning"],
+  });
+  const diversePaper = paper(42, {
+    title: "Distinct Control Policy",
+    published,
+    updated: published,
+    category: "cs.AI",
+    categories: ["cs.AI"],
+    tags: ["Policy Optimization"],
+  });
+  const candidates = [similarPaper(40), similarPaper(41), diversePaper];
+
+  const serverRanking = rankPapers(
+    candidates,
+    ["Robot Learning"],
+    [],
+    new Map(),
+    2,
+    { now },
+  );
+  for (const item of serverRanking) {
+    assert.equal(/[\u3400-\u9fff]/u.test(item.recommendation.reason), false);
+  }
+  const topicExploration = serverRanking.find(
+    (item) => item.recommendation.exploration,
+  );
+  assert.ok(topicExploration, "expected the diversified server ranking to explore a topic");
+  assertEnglishRecommendationReason(
+    topicExploration.recommendation.reason,
+    / · Topic exploration$/,
+  );
+
+  const localRanking = rankPapersLocally(
+    candidates,
+    [],
+    ["Robot Learning"],
+    { version: 3, signals: {} },
+    [],
+    new Map(),
+    2,
+    { now },
+  );
+  for (const item of localRanking) {
+    assert.equal(/[\u3400-\u9fff]/u.test(item.recommendation.reason), false);
+  }
+  const diversityExploration = localRanking.find(
+    (item) => item.recommendation.exploration,
+  );
+  assert.ok(diversityExploration, "expected the local ranking to explore for diversity");
+  assertEnglishRecommendationReason(
+    diversityExploration.recommendation.reason,
+    / · Diversity exploration$/,
+  );
 });
 
 test("relevant feedback raises a paper while negative kinds apply distinct penalties", () => {

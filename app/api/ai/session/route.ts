@@ -164,7 +164,7 @@ export async function POST(request: Request) {
   if (!openAISessionAvailable()) {
     return json(
       {
-        error: "服务器尚未配置 PAPER_ORBIT_SESSION_SECRET，暂时不能建立个人 AI 会话。",
+        error: "PAPER_ORBIT_SESSION_SECRET is not configured, so a personal AI session cannot be created yet.",
         code: "SESSION_NOT_CONFIGURED",
       },
       { status: 503 },
@@ -179,7 +179,7 @@ export async function POST(request: Request) {
     };
     const apiKey = cleanOpenAIApiKey(body.apiKey);
     if (!apiKey) {
-      return json({ error: "请输入有效的 API Key。", code: "OPENAI_KEY_INVALID" }, { status: 400 });
+      return json({ error: "Enter a valid API key.", code: "OPENAI_KEY_INVALID" }, { status: 400 });
     }
 
     const localDevelopment = isLocalDevelopmentRequest(request);
@@ -191,8 +191,8 @@ export async function POST(request: Request) {
       return json(
         {
           error: localDevelopment
-            ? "本地模式只额外允许 http://127.0.0.1 或 http://localhost 回环地址；其他地址仍必须是公网 HTTPS。"
-            : "API Base URL 必须是公网 HTTPS 地址，且不能包含账号、查询参数、片段、本机或内网地址。",
+            ? "Local mode additionally allows only the http://127.0.0.1 and http://localhost loopback addresses; every other address must still use public HTTPS."
+            : "The API Base URL must use public HTTPS and cannot contain credentials, query parameters, fragments, localhost, or a private-network address.",
           code: "OPENAI_BASE_URL_INVALID",
         },
         { status: 400 },
@@ -204,7 +204,7 @@ export async function POST(request: Request) {
       : cleanOpenAIModel(body.model);
     if (!model) {
       return json(
-        { error: "请输入有效的模型 ID。", code: "OPENAI_MODEL_INVALID" },
+        { error: "Enter a valid model ID.", code: "OPENAI_MODEL_INVALID" },
         { status: 400 },
       );
     }
@@ -229,33 +229,33 @@ export async function POST(request: Request) {
   } catch (error) {
     const code = error instanceof Error ? error.message : "OPENAI_VALIDATION_FAILED";
     if (code === "OPENAI_KEY_INVALID") {
-      return json({ error: "这个 API Key 无效、已撤销，或无权访问该服务。", code }, { status: 401 });
+      return json({ error: "This API key is invalid, has been revoked, or cannot access the service.", code }, { status: 401 });
     }
     if (code === "OPENAI_QUOTA_UNAVAILABLE") {
-      return json({ error: "API 服务当前额度不足或请求过快。", code }, { status: 429 });
+      return json({ error: "The API service is out of quota or rate-limiting requests.", code }, { status: 429 });
     }
     if (code === "OPENAI_ENDPOINT_UNREACHABLE") {
       return json(
-        { error: "无法连接该 API Base URL；请检查地址、HTTPS 证书和网络可达性。", code },
+        { error: "Could not connect to this API Base URL. Check the address, HTTPS certificate, and network availability.", code },
         { status: 502 },
       );
     }
     if (code === "OPENAI_ENDPOINT_INCOMPATIBLE") {
       return json(
-        { error: "该地址未提供兼容的 /models 接口，请填写完整 API 根地址（例如 https://example.com/v1）。", code },
+        { error: "This address does not provide a compatible /models endpoint. Enter the complete API root URL, such as https://example.com/v1.", code },
         { status: 502 },
       );
     }
     if (code === "OPENAI_MODELS_RESPONSE_TOO_LARGE") {
       return json(
-        { error: "该服务的 /models 响应异常过大，连接未保存。", code },
+        { error: "The service returned an unexpectedly large /models response, so the connection was not saved.", code },
         { status: 502 },
       );
     }
     if (code === "OPENAI_RESPONSES_UNREACHABLE") {
       return json(
         {
-          error: "该地址的 /models 可访问，但无法连接 /responses 真实推理接口。连接未保存。",
+          error: "The /models endpoint is reachable, but the live /responses inference endpoint is not. The connection was not saved.",
           code,
         },
         { status: 502 },
@@ -264,7 +264,7 @@ export async function POST(request: Request) {
     if (code === "OPENAI_MODEL_OR_RESPONSES_INVALID") {
       return json(
         {
-          error: "该模型无法完成标准 /responses 文本推理；请检查模型 ID 和兼容接口。连接未保存。",
+          error: "This model could not complete a standard /responses text inference. Check the model ID and compatible endpoint. The connection was not saved.",
           code,
         },
         { status: 502 },
@@ -273,7 +273,7 @@ export async function POST(request: Request) {
     if (code === "OPENAI_RESPONSES_INCOMPATIBLE") {
       return json(
         {
-          error: "该服务没有返回标准的非流式 Responses JSON 文本；连接未保存。",
+          error: "The service did not return standard non-streaming Responses JSON text, so the connection was not saved.",
           code,
         },
         { status: 502 },
@@ -282,7 +282,7 @@ export async function POST(request: Request) {
     if (code === "OPENAI_RESPONSES_TOO_LARGE") {
       return json(
         {
-          error: "该服务的最小 Responses 验证返回了异常大的正文，连接未保存。",
+          error: "The minimal Responses validation returned an unexpectedly large body, so the connection was not saved.",
           code,
         },
         { status: 502 },
@@ -291,14 +291,14 @@ export async function POST(request: Request) {
     if (code === "OPENAI_LIVE_CHECK_FAILED") {
       return json(
         {
-          error: "该服务的 /responses 真实推理失败；请检查代理上游路由，连接未保存。",
+          error: "The live /responses inference failed. Check the proxy's upstream routing. The connection was not saved.",
           code,
         },
         { status: 502 },
       );
     }
     return json(
-      { error: "暂时无法验证 API 连接，请稍后重试。", code: "OPENAI_VALIDATION_FAILED" },
+      { error: "The API connection could not be validated. Try again later.", code: "OPENAI_VALIDATION_FAILED" },
       { status: 502 },
     );
   }
