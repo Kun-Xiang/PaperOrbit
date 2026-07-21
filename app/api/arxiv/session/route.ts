@@ -75,7 +75,7 @@ export async function POST(request: Request) {
   if (!researchSessionAvailable()) {
     return json(
       {
-        error: "服务器尚未配置 PAPER_ORBIT_SESSION_SECRET，暂时不能建立个人论文数据会话。",
+        error: "PAPER_ORBIT_SESSION_SECRET is not configured, so a personal research-data session cannot be created yet.",
         code: "SESSION_NOT_CONFIGURED",
       },
       { status: 503 },
@@ -88,7 +88,7 @@ export async function POST(request: Request) {
     if (apiKey.length < 16) {
       return json(
         {
-          error: "请输入有效的 Semantic Scholar API Key。",
+          error: "Enter a valid Semantic Scholar API key.",
           code: "SEMANTIC_SCHOLAR_KEY_INVALID",
         },
         { status: 400 },
@@ -111,19 +111,19 @@ export async function POST(request: Request) {
       : "SEMANTIC_SCHOLAR_VALIDATION_FAILED";
     if (code === "SEMANTIC_SCHOLAR_KEY_INVALID") {
       return json(
-        { error: "这个 Semantic Scholar API Key 无效或已撤销。", code },
+        { error: "This Semantic Scholar API key is invalid or has been revoked.", code },
         { status: 401 },
       );
     }
     if (code === "SEMANTIC_SCHOLAR_QUOTA_UNAVAILABLE") {
       return json(
-        { error: "Semantic Scholar API 当前额度不足或请求过快。", code },
+        { error: "The Semantic Scholar API is out of quota or rate-limiting requests.", code },
         { status: 429 },
       );
     }
     return json(
       {
-        error: "暂时无法验证 Semantic Scholar API Key，请稍后重试。",
+        error: "The Semantic Scholar API key could not be validated. Try again later.",
         code: "SEMANTIC_SCHOLAR_VALIDATION_FAILED",
       },
       { status: 502 },

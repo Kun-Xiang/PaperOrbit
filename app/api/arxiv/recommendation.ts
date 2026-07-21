@@ -569,18 +569,18 @@ function scoreReason(
 ) {
   const parts: string[] = [];
   if (matchedInterests.length) {
-    parts.push(`匹配 ${matchedInterests.slice(0, 2).join(" + ")}`);
+    parts.push(`Matches ${matchedInterests.slice(0, 2).join(" + ")}`);
   }
   if (citationCount > 0) {
-    parts.push(`${citationCount} 次引用信号`);
+    parts.push(`${citationCount} citation${citationCount === 1 ? "" : "s"}`);
   } else if (affinity >= 0.58) {
-    parts.push("来自你的阅读反馈");
+    parts.push("Informed by your reading feedback");
   } else if (evidence >= 0.62) {
-    parts.push("实验 / 开源信号较完整");
+    parts.push("Strong experimental / open-source signals");
   } else if (freshness >= 0.8) {
-    parts.push("近期新作");
+    parts.push("Recently published");
   }
-  return parts.slice(0, 2).join(" · ") || "近期高相关工作";
+  return parts.slice(0, 2).join(" · ") || "Highly relevant recent work";
 }
 
 function paperTokens(paper: CandidatePaper) {
@@ -699,7 +699,7 @@ export function rankPapers(
     if (exploration) {
       chosen.recommendation = {
         ...chosen.recommendation,
-        reason: `${chosen.recommendation.reason} · 主题探索`,
+        reason: `${chosen.recommendation.reason} · Topic exploration`,
         exploration: true,
       };
     }
@@ -787,19 +787,23 @@ function localReason(
   feedback: ReturnType<typeof feedbackAdjustment>,
 ) {
   if (feedback.exactKind === "relevant") {
-    return `你标记为相关 · ${baselineReason}`;
+    return `Marked relevant · ${baselineReason}`;
   }
   if (feedback.exactKind === "not_relevant") {
-    return `已按“不相关”反馈降权 · ${baselineReason}`;
+    return `Downranked by “Not relevant” feedback · ${baselineReason}`;
   }
   if (feedback.exactKind === "too_broad") {
-    return `已按“过于宽泛”反馈降权 · ${baselineReason}`;
+    return `Downranked by “Too broad” feedback · ${baselineReason}`;
   }
   if (feedback.exactKind === "already_knew") {
-    return `已读过 / 已知 · ${baselineReason}`;
+    return `Already read / known · ${baselineReason}`;
   }
-  if (feedback.related >= 0.04) return `与你标记相关的论文相似 · ${baselineReason}`;
-  if (profileAffinity >= 0.18) return `匹配本机阅读偏好 · ${baselineReason}`;
+  if (feedback.related >= 0.04) {
+    return `Similar to papers you marked relevant · ${baselineReason}`;
+  }
+  if (profileAffinity >= 0.18) {
+    return `Matches your on-device reading preferences · ${baselineReason}`;
+  }
   return baselineReason;
 }
 
@@ -910,7 +914,7 @@ export function rankPapersLocally(
     if (exploration) {
       chosen.recommendation = {
         ...chosen.recommendation,
-        reason: `${chosen.recommendation.reason} · 多样性探索`,
+        reason: `${chosen.recommendation.reason} · Diversity exploration`,
         exploration: true,
       };
     }

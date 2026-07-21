@@ -99,7 +99,6 @@ type AiDiagnostic = {
 };
 
 type Paper = CandidatePaper & {
-  zhSummary?: string;
   score: number;
   recommendation?: RecommendationDetails;
 };
@@ -194,24 +193,24 @@ const DEFAULT_SEARCH_FILTERS: SearchFilters = {
 };
 
 const FEEDBACK_LABELS: Record<FeedbackKind, string> = {
-  relevant: "相关",
-  not_relevant: "不相关",
-  too_broad: "过于宽泛",
-  already_knew: "已读过 / 已知",
+  relevant: "Relevant",
+  not_relevant: "Not relevant",
+  too_broad: "Too broad",
+  already_knew: "Already read / familiar",
 };
 
 const COPILOT_WELCOME: ChatMessage = {
   role: "assistant",
-  text: "连接支持 Responses 与 PDF 输入的 AI 服务后，我会直接阅读所选论文的 arXiv PDF 全文。你可以问核心机制、公式、图表、实验或复现风险。",
+  text: "Connect an AI service that supports the Responses API and PDF input, and I will read the selected paper directly from its full arXiv PDF. Ask me about the core mechanism, equations, figures, experiments, or replication risks.",
 };
 
 function aiProviderLabel(baseUrl: string | null) {
-  if (!baseUrl) return "AI 服务";
+  if (!baseUrl) return "AI service";
   try {
     const hostname = new URL(baseUrl).hostname;
-    return hostname === "api.openai.com" ? "OpenAI 官方" : hostname;
+    return hostname === "api.openai.com" ? "Official OpenAI API" : hostname;
   } catch {
-    return "AI 服务";
+    return "AI service";
   }
 }
 
@@ -233,8 +232,6 @@ const SEED_PAPERS: Paper[] = [
     authors: ["Qihang Zhang", "Lin Li", "Luyao Zhang", "Shuailei Ma"],
     summary:
       "LingBot-VA 2.0 builds a video-action foundation model natively for embodied control, combining causal pretraining, semantic action tokens, sparse experts, and real-time asynchronous execution.",
-    zhSummary:
-      "从预训练阶段就把视觉、动作与因果动态放进同一语义空间，让机器人控制摆脱“先做视频模型、再勉强改造”的路径。",
     published: "2026-07-09",
     category: "cs.RO",
     categories: ["cs.RO", "cs.CV", "cs.AI"],
@@ -250,8 +247,6 @@ const SEED_PAPERS: Paper[] = [
     authors: ["Letian Wang", "Chuhan Zhang", "Rishabh Kabra", "Kaiming He"],
     summary:
       "GenCeption turns a pretrained text-to-video diffusion backbone into a feed-forward perception model for depth, segmentation, pose, and 3D keypoint tasks.",
-    zhSummary:
-      "把视频生成模型重新解释为通用视觉预训练器：同一骨干可被文本指令驱动，完成深度、分割、姿态与三维关键点等任务。",
     published: "2026-07-10",
     category: "cs.CV",
     categories: ["cs.CV", "cs.AI"],
@@ -267,8 +262,6 @@ const SEED_PAPERS: Paper[] = [
     authors: ["Yiming Zhang", "Zhonghan Zhao", "Wenwei Zhang", "Kai Chen"],
     summary:
       "The work studies visual pretraining directly on scientific documents and web pages, retaining equations, figures, and layout instead of reducing them to plain text.",
-    zhSummary:
-      "直接从带公式、图表和版式的视觉文档学习语言智能，在相同语料上持续优于纯文本预训练。",
     published: "2026-07-10",
     category: "cs.CL",
     categories: ["cs.CL", "cs.CV", "cs.LG"],
@@ -284,8 +277,6 @@ const SEED_PAPERS: Paper[] = [
     authors: ["Shuailei Ma", "Jiaqi Liao", "Xinyang Wang"],
     summary:
       "LingBot-Video scales open video foundation models with sparse experts, robot-augmented data, and physics-aware rewards for embodied intelligence.",
-    zhSummary:
-      "用稀疏专家、机器人增强数据与物理一致性奖励扩展视频预训练，为具身智能提供更可信的动态先验。",
     published: "2026-07-08",
     category: "cs.CV",
     categories: ["cs.CV", "cs.RO"],
@@ -301,8 +292,6 @@ const SEED_PAPERS: Paper[] = [
     authors: ["Haoyuan Li", "Dizhe Zhang", "Yuemei Zhou", "Ming-Hsuan Yang"],
     summary:
       "PanoWorld uses panoramic representations and geometry-aware memory to preserve physical consistency across long camera trajectories and illumination changes.",
-    zhSummary:
-      "用全景表示和几何记忆处理超长相机轨迹，在大尺度空间变化中保持场景连续性与物理一致性。",
     published: "2026-07-10",
     category: "cs.CV",
     categories: ["cs.CV", "cs.GR"],
@@ -318,8 +307,6 @@ const SEED_PAPERS: Paper[] = [
     authors: ["Lulin Liu", "Nuo Chen", "Yan Wang", "Bangya Liu", "Wenyan Cong", "Marco Pavone"],
     summary:
       "OpenLongTail is an open-source generative data engine that converts heterogeneous in-the-wild driving videos into view-aligned, temporally coherent multi-view assets for long-tail policy learning.",
-    zhSummary:
-      "把异构的真实长尾驾驶视频补全为视角对齐、时序一致的多视图训练数据，并在闭环测试中验证其对极端场景鲁棒性的提升。",
     published: "2026-07-10",
     category: "cs.CV",
     categories: ["cs.CV"],
@@ -335,8 +322,6 @@ const SEED_PAPERS: Paper[] = [
     authors: ["Xiaoshen Han", "Haoyu Xiong", "Haonan Chen", "Chaoqi Liu", "Antonio Torralba", "Yuke Zhu", "Yilun Du"],
     summary:
       "B-spline Policy replaces discrete action chunks with continuous B-spline curves, allowing robot policies to execute smoother trajectories at higher frequencies and speeds.",
-    zhSummary:
-      "用连续 B 样条曲线替代离散动作块，让操作策略生成可缩放的平滑轨迹，在保持成功率的同时缩短任务完成时间。",
     published: "2026-07-10",
     category: "cs.RO",
     categories: ["cs.RO"],
@@ -352,8 +337,6 @@ const SEED_PAPERS: Paper[] = [
     authors: ["Xiaokai Bai", "Lianqing Zheng", "Runwei Guan", "Songkai Wang", "Siyuan Cao", "Hui-liang Shen"],
     summary:
       "4DR360 treats semantic occupancy as a persistent scene state and propagates it through radar-camera fusion stages for joint 3D detection and occupancy prediction.",
-    zhSummary:
-      "将语义占用建模为持续传播的场景状态，把 4D 雷达与相机信息用于统一的三维检测和占用预测，并覆盖鲁棒性与效率评估。",
     published: "2026-07-10",
     category: "cs.CV",
     categories: ["cs.CV", "cs.AI"],
@@ -369,8 +352,6 @@ const SEED_PAPERS: Paper[] = [
     authors: ["Yujie Pang", "Zudong Li"],
     summary:
       "PAC-ACT adds chunk-level reinforcement-learning post-training to pretrained Action Chunking Transformers for precision contact manipulation under pose and force constraints.",
-    zhSummary:
-      "在预训练 ACT 策略上进行动作块级 actor-critic 后训练，用行为先验约束缓解接触操作中的分布偏移，同时保持低延迟。",
     published: "2026-07-10",
     category: "cs.RO",
     categories: ["cs.RO", "cs.AI"],
@@ -386,8 +367,6 @@ const SEED_PAPERS: Paper[] = [
     authors: ["Jiyue Tao", "Shunheng Xin", "Tongsheng Shen", "Dexin Zhao", "Feitian Zhang"],
     summary:
       "CoDiMAD distills a globally informed multi-robot oracle into decentralized diffusion policies that preserve multimodal cooperative actions under partial observability.",
-    zhSummary:
-      "将全局信息 oracle 蒸馏为去中心化扩散策略，避免确定性蒸馏把多模态协作动作平均掉，面向无通信、多机器人协同。",
     published: "2026-07-10",
     category: "cs.RO",
     categories: ["cs.RO"],
@@ -408,10 +387,16 @@ function uniquePapers(...groups: Paper[][]) {
   return Array.from(map.values());
 }
 
+function paperPayload(paper: Paper) {
+  const payload: Record<string, unknown> = { ...paper };
+  delete payload.zhSummary;
+  return payload;
+}
+
 function dateLabel(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
   }).format(date);
@@ -444,7 +429,7 @@ export default function PaperOrbitClient({
   );
   const [searchMeta, setSearchMeta] = useState<SearchMeta | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
-  const [searchMessage, setSearchMessage] = useState("搜索标题、作者、主题或 arXiv ID");
+  const [searchMessage, setSearchMessage] = useState("Search by title, author, topic, or arXiv ID");
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [readIds, setReadIds] = useState<Set<string>>(new Set());
   const [reports, setReports] = useState<ReadingReport[]>([]);
@@ -460,7 +445,7 @@ export default function PaperOrbitClient({
   const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
   const [ready, setReady] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [refreshNote, setRefreshNote] = useState("多信号选刊 · 每日更新");
+  const [refreshNote, setRefreshNote] = useState("Multi-signal selection · Updated daily");
   const [copilotPaperId, setCopilotPaperId] = useState(SEED_PAPERS[0].id);
   const [aiInput, setAiInput] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
@@ -648,7 +633,7 @@ export default function PaperOrbitClient({
 
   async function refreshDaily(silent = false) {
     setRefreshing(true);
-    if (!silent) setRefreshNote("正在扫描候选池并重新排序…");
+    if (!silent) setRefreshNote("Scanning the candidate pool and reranking…");
     try {
       const response = await fetch("/api/arxiv?mode=feed", {
         cache: "no-store",
@@ -677,19 +662,19 @@ export default function PaperOrbitClient({
         );
         const candidateCount = data.meta?.candidateCount ?? data.papers.length;
         const sourceLabel = data.meta?.metadataCredential === "session"
-          ? "个人影响力数据已校准"
+          ? "Calibrated with your influence data"
           : data.meta?.metadataCredential === "shared"
-            ? "站点影响力数据已校准"
+            ? "Calibrated with site influence data"
             : data.source?.includes("semantic-scholar")
-              ? "公开影响力信号已校准"
-              : "arXiv 公开候选池";
+              ? "Calibrated with public influence signals"
+              : "Public arXiv candidate pool";
         setRefreshNote(
-          `从 ${candidateCount} 篇候选中在本机精选 · ${sourceLabel}`,
+          `Selected locally from ${candidateCount} candidates · ${sourceLabel}`,
         );
-        if (!silent) showToast("今日 10 篇已在本机重新排序");
+        if (!silent) showToast("Today's 10 papers have been reranked locally");
       }
     } catch {
-      setRefreshNote("编辑部缓存 · 网络恢复后自动更新");
+      setRefreshNote("Editorial cache · Updates automatically when the network returns");
     } finally {
       setRefreshing(false);
     }
@@ -728,7 +713,7 @@ export default function PaperOrbitClient({
     if (queryOverride !== undefined) setSearchQuery(query);
     setActiveView("discover");
     setSearchLoading(true);
-    setSearchMessage(`正在 arXiv 中检索“${query}”…`);
+    setSearchMessage(`Searching arXiv for “${query}”…`);
     try {
       const params = new URLSearchParams({
         q: query,
@@ -761,8 +746,8 @@ export default function PaperOrbitClient({
       const last = (data.meta?.start ?? 0) + papers.length;
       setSearchMessage(
         papers.length
-          ? `显示第 ${first}–${last} 篇，共 ${total} 篇结果`
-          : "没有找到结果，试试更宽的关键词或清除筛选",
+          ? `Showing ${first}–${last} of ${total} results`
+          : "No results found. Try broader keywords or clear the filters.",
       );
     } catch {
       const local = startOverride === 0 ? SEED_PAPERS.filter((paper) =>
@@ -773,7 +758,9 @@ export default function PaperOrbitClient({
       setSearchResults(local);
       setSearchMeta(null);
       setSearchMessage(
-        local.length ? "实时搜索暂不可用，先显示编辑部缓存" : "实时搜索暂不可用，请稍后重试",
+        local.length
+          ? "Live search is unavailable; showing the editorial cache instead."
+          : "Live search is unavailable. Please try again later.",
       );
     } finally {
       setSearchLoading(false);
@@ -785,7 +772,7 @@ export default function PaperOrbitClient({
     setSearchFilters(DEFAULT_SEARCH_FILTERS);
     setSearchResults([]);
     setSearchMeta(null);
-    setSearchMessage("搜索标题、作者、主题或 arXiv ID");
+    setSearchMessage("Search by title, author, topic, or arXiv ID");
     searchRef.current?.focus();
   }
 
@@ -802,8 +789,8 @@ export default function PaperOrbitClient({
     );
     setRankingNow(now.getTime());
     showToast(
-      nextKind ? "反馈已保存，推荐顺序已更新" : "已清除这篇论文的反馈",
-      "撤销",
+      nextKind ? "Feedback saved and recommendations reranked" : "Feedback cleared for this paper",
+      "Undo",
       () => {
         const undoNow = new Date();
         setPaperFeedback((current) =>
@@ -832,7 +819,7 @@ export default function PaperOrbitClient({
       ),
     );
     setRankingNow(now.getTime());
-    showToast("这条论文反馈已清除");
+    showToast("Paper feedback cleared");
   }
 
   function toggleSaved(id: string) {
@@ -842,10 +829,10 @@ export default function PaperOrbitClient({
       const next = new Set(current);
       if (next.has(id)) {
         next.delete(id);
-        showToast("已从书库移除");
+        showToast("Removed from your library");
       } else {
         next.add(id);
-        showToast("已保存到书库");
+        showToast("Saved to your library");
       }
       return next;
     });
@@ -865,13 +852,13 @@ export default function PaperOrbitClient({
         cache: "no-store",
       });
       const data = (await response.json()) as AiConnection & { error?: string };
-      if (!response.ok) throw new Error(data.error || "无法读取 AI 连接状态");
+      if (!response.ok) throw new Error(data.error || "Unable to read the AI connection status");
       setAiConnection(data);
       setApiBaseUrlInput(data.baseUrl ?? suggestedApiBaseUrl);
       setApiModelInput(data.model ?? DEFAULT_OPENAI_MODEL);
       setAiMode(data.connected ? "openai" : "preview");
     } catch {
-      setAiConnectionMessage("暂时无法读取 AI 连接状态。");
+      setAiConnectionMessage("The AI connection status is temporarily unavailable.");
     } finally {
       setAiConnectionReady(true);
     }
@@ -884,7 +871,7 @@ export default function PaperOrbitClient({
     const model = apiModelInput.trim();
     if (!apiKey || !baseUrl || !model || aiConnectionBusy) return;
     setAiConnectionBusy(true);
-    setAiConnectionMessage("正在检查 /models，并执行一次最小 /responses 真实推理…");
+    setAiConnectionMessage("Checking /models and running a minimal live /responses inference…");
     try {
       const response = await fetch("/api/ai/session", {
         method: "POST",
@@ -893,16 +880,16 @@ export default function PaperOrbitClient({
         body: JSON.stringify({ apiKey, baseUrl, model }),
       });
       const data = (await response.json()) as AiConnection & { error?: string };
-      if (!response.ok) throw new Error(data.error || "连接 AI 服务失败");
+      if (!response.ok) throw new Error(data.error || "Unable to connect the AI service");
       setAiConnection(data);
       setApiBaseUrlInput(data.baseUrl ?? baseUrl);
       setApiModelInput(data.model ?? model);
       setAiMode("openai");
-      setAiConnectionMessage(`已通过 /models 与真实纯文本 /responses 推理并连接 ${aiProviderLabel(data.baseUrl)}。PDF 是独立能力：每篇提问时 PaperOrbit 会先核验 arXiv，再实测全文链路。`);
-      showToast("AI 文本链路已实测连接");
+      setAiConnectionMessage(`Connected to ${aiProviderLabel(data.baseUrl)} after verifying /models and a live text-only /responses inference. PDF support is validated separately: Paper Orbit checks arXiv and tests the full-text path for each paper request.`);
+      showToast("AI text path verified and connected");
     } catch (error) {
       setAiConnectionMessage(
-        error instanceof Error ? error.message : "连接 AI 服务失败，请稍后重试。",
+        error instanceof Error ? error.message : "Unable to connect the AI service. Please try again later.",
       );
     } finally {
       setApiKeyInput("");
@@ -919,18 +906,20 @@ export default function PaperOrbitClient({
         credentials: "same-origin",
       });
       const data = (await response.json()) as AiConnection & { error?: string };
-      if (!response.ok) throw new Error(data.error || "断开连接失败");
+      if (!response.ok) throw new Error(data.error || "Unable to disconnect the service");
       setAiConnection(data);
       setApiBaseUrlInput(data.baseUrl ?? suggestedApiBaseUrl);
       setApiModelInput(data.model ?? DEFAULT_OPENAI_MODEL);
       setAiMode(data.connected ? "openai" : "preview");
       setAiConnectionMessage(
-        data.connected ? "个人会话已清除；当前仍使用站点配置的共享 OpenAI 连接。" : "个人 AI 服务会话已从此浏览器清除。",
+        data.connected
+          ? "Your personal session has been cleared. The site-configured shared OpenAI connection is still active."
+          : "Your personal AI service session has been cleared from this browser.",
       );
-      showToast("个人 AI 服务会话已断开");
+      showToast("Personal AI service session disconnected");
     } catch (error) {
       setAiConnectionMessage(
-        error instanceof Error ? error.message : "断开连接失败，请稍后重试。",
+        error instanceof Error ? error.message : "Unable to disconnect the service. Please try again later.",
       );
     } finally {
       setAiConnectionBusy(false);
@@ -947,11 +936,11 @@ export default function PaperOrbitClient({
         error?: string;
       };
       if (!response.ok) {
-        throw new Error(data.error || "无法读取论文数据连接状态");
+        throw new Error(data.error || "Unable to read the paper data connection status");
       }
       setResearchConnection(data);
     } catch {
-      setResearchConnectionMessage("暂时无法读取论文数据连接状态。");
+      setResearchConnectionMessage("The paper data connection status is temporarily unavailable.");
     } finally {
       setResearchConnectionReady(true);
     }
@@ -962,7 +951,7 @@ export default function PaperOrbitClient({
     const apiKey = semanticScholarKeyInput.trim();
     if (!apiKey || researchConnectionBusy) return;
     setResearchConnectionBusy(true);
-    setResearchConnectionMessage("正在验证并建立加密论文数据会话…");
+    setResearchConnectionMessage("Validating the key and establishing an encrypted paper data session…");
     try {
       const response = await fetch("/api/arxiv/session", {
         method: "POST",
@@ -974,19 +963,19 @@ export default function PaperOrbitClient({
         error?: string;
       };
       if (!response.ok) {
-        throw new Error(data.error || "连接 Semantic Scholar 失败");
+        throw new Error(data.error || "Unable to connect Semantic Scholar");
       }
       setResearchConnection(data);
       setResearchConnectionMessage(
-        "已连接。刷新选刊时会使用你的 Semantic Scholar API 配额读取引用影响力信号。",
+        "Connected. Future refreshes will use your Semantic Scholar API quota to retrieve citation-based influence signals.",
       );
-      showToast("个人论文影响力数据已连接");
+      showToast("Personal paper influence data connected");
       await refreshDaily(true);
     } catch (error) {
       setResearchConnectionMessage(
         error instanceof Error
           ? error.message
-          : "连接 Semantic Scholar 失败，请稍后重试。",
+          : "Unable to connect Semantic Scholar. Please try again later.",
       );
     } finally {
       setSemanticScholarKeyInput("");
@@ -1006,21 +995,21 @@ export default function PaperOrbitClient({
         error?: string;
       };
       if (!response.ok) {
-        throw new Error(data.error || "断开论文数据连接失败");
+        throw new Error(data.error || "Unable to disconnect the paper data service");
       }
       setResearchConnection(data);
       setResearchConnectionMessage(
         data.semanticScholar.source === "shared"
-          ? "个人会话已清除；当前仅 OWNER/MANAGER 使用站点共享的论文元数据连接。"
-          : "个人 Semantic Scholar 会话已从此浏览器清除；arXiv 公开检索仍可继续使用。",
+          ? "Your personal session has been cleared. Only OWNER and MANAGER accounts now use the site's shared paper metadata connection."
+          : "Your personal Semantic Scholar session has been cleared from this browser. Public arXiv search remains available.",
       );
-      showToast("个人论文数据会话已断开");
+      showToast("Personal paper data session disconnected");
       await refreshDaily(true);
     } catch (error) {
       setResearchConnectionMessage(
         error instanceof Error
           ? error.message
-          : "断开论文数据连接失败，请稍后重试。",
+          : "Unable to disconnect the paper data service. Please try again later.",
       );
     } finally {
       setResearchConnectionBusy(false);
@@ -1048,7 +1037,7 @@ export default function PaperOrbitClient({
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          paper: copilotPaper,
+          paper: paperPayload(copilotPaper),
           prompt,
           action: "chat",
           history,
@@ -1078,7 +1067,7 @@ export default function PaperOrbitClient({
           ...current,
           {
             role: "assistant",
-            text: data.error || "这次全文分析没有完成。",
+            text: data.error || "This full-text analysis could not be completed.",
             diagnostic,
             retryPrompt: diagnostic.retryable ? prompt : undefined,
           },
@@ -1113,7 +1102,7 @@ export default function PaperOrbitClient({
           text:
             error instanceof Error
               ? error.message
-              : "这次全文分析没有完成，请稍后重试。",
+              : "This full-text analysis could not be completed. Please try again later.",
           diagnostic,
           retryPrompt: prompt,
         },
@@ -1128,16 +1117,16 @@ export default function PaperOrbitClient({
     setCopilotPaperId(paper.id);
     setChat([COPILOT_WELCOME]);
     setAiBusy(true);
-    showToast("正在生成阅读报告…");
+    showToast("Generating the reading report…");
     try {
       const response = await fetch("/api/ai", {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          paper,
+          paper: paperPayload(paper),
           action: "report",
-          prompt: `请阅读 PDF 全文，用自然、连贯的简体中文生成结构化报告：研究问题、核心方法、关键贡献、证据强弱、局限、与我兴趣的关系、三个追问。我的研究兴趣是 ${interests.join("、")}。请综合正文、公式、图表、实验与附录，尽可能给出可核验位置；不要逐句翻译、复述或大段复制论文，并明确区分正文事实、合理推断与论文未提供的证据。`,
+          prompt: `Respond in English. Read the full PDF and write a natural, coherent structured report covering the research question, core method, key contributions, strength of evidence, limitations, connection to my interests, and three follow-up questions. My research interests are ${interests.join(", ")}. Synthesize the main text, equations, figures, experiments, and appendix, citing verifiable locations wherever possible. Do not translate sentence by sentence, paraphrase mechanically, or copy long passages. Clearly distinguish facts stated in the paper, reasonable inferences, and evidence the paper does not provide.`,
         }),
       });
       const data = (await response.json()) as {
@@ -1151,8 +1140,8 @@ export default function PaperOrbitClient({
         diagnostic?: AiDiagnostic;
       };
       if (!response.ok || !data.answer || !data.mode) {
-        const suffix = data.diagnostic?.id ? `（诊断号 ${data.diagnostic.id}）` : "";
-        throw new Error(`${data.error || "报告暂未生成。"}${suffix}`);
+        const suffix = data.diagnostic?.id ? ` (diagnostic ID: ${data.diagnostic.id})` : "";
+        throw new Error(`${data.error || "The report could not be generated."}${suffix}`);
       }
       setAiMode(data.mode);
       const report: ReadingReport = {
@@ -1167,9 +1156,9 @@ export default function PaperOrbitClient({
       setActiveReport(report);
       learnFromPaper(paper, 2);
       setReadIds((current) => new Set(current).add(paper.id));
-      showToast("阅读报告已生成并保存");
+      showToast("Reading report generated and saved");
     } catch (error) {
-      showToast(error instanceof Error ? error.message : "报告暂未生成，请稍后重试");
+      showToast(error instanceof Error ? error.message : "The report could not be generated. Please try again later.");
     } finally {
       setAiBusy(false);
     }
@@ -1178,7 +1167,7 @@ export default function PaperOrbitClient({
   async function deepReadWithCopilot() {
     if (!copilotPaper) return;
     await askAI(
-      `请基于 PDF 全文深度分析这篇论文。我的研究兴趣是 ${interests.join("、")}。请重点解释核心机制、关键公式与图表、证据是否支撑结论、与相关工作的差异，以及最值得复现的实验，并标注可核验的位置。`,
+      `Respond in English. Analyze this paper in depth using the full PDF. My research interests are ${interests.join(", ")}. Focus on the core mechanism, important equations and figures, whether the evidence supports the conclusions, differences from related work, and the experiment most worth reproducing. Cite verifiable locations wherever possible.`,
     );
   }
 
@@ -1188,7 +1177,7 @@ export default function PaperOrbitClient({
     localStorage.setItem(storage.interests, JSON.stringify(next));
     setSettingsOpen(false);
     setRankingNow(Date.now());
-    showToast("兴趣画像已更新，本机推荐已重排");
+    showToast("Research interests updated and local recommendations reranked");
     void refreshDaily();
   }
 
@@ -1227,7 +1216,7 @@ export default function PaperOrbitClient({
           className="brand"
           type="button"
           onClick={() => setActiveView("today")}
-          aria-label="Paper Orbit 首页"
+          aria-label="Paper Orbit home"
         >
           <span className="orbit-mark" aria-hidden="true">
             <span className="orbit-core" />
@@ -1239,7 +1228,7 @@ export default function PaperOrbitClient({
           </span>
         </button>
 
-        <nav className="main-nav" aria-label="主要导航">
+        <nav className="main-nav" aria-label="Main navigation">
           {navItems.map((item) => (
             <button
               key={item.id}
@@ -1259,14 +1248,14 @@ export default function PaperOrbitClient({
           <form className="search-compact" onSubmit={submitSearch}>
             <span className="search-glyph" aria-hidden="true" />
             <label className="sr-only" htmlFor="global-search">
-              搜索 arXiv
+              Search arXiv
             </label>
             <input
               ref={searchRef}
               id="global-search"
               value={searchQuery}
               onChange={(event) => updateSearchQuery(event.target.value)}
-              placeholder="搜索 arXiv…"
+              placeholder="Search arXiv…"
               autoComplete="off"
             />
             <kbd>⌘ K</kbd>
@@ -1278,7 +1267,7 @@ export default function PaperOrbitClient({
               setDraftInterests(interests);
               setSettingsOpen(true);
             }}
-            aria-label={`编辑兴趣画像，当前用户 ${viewer.displayName}`}
+            aria-label={`Edit research interests for ${viewer.displayName}`}
             title={`${viewer.email} · ${VIEWER_ROLE_LABELS[viewer.role]}`}
           >
             {viewer.initials}
@@ -1366,10 +1355,10 @@ export default function PaperOrbitClient({
         {activeView === "library" ? (
           <CollectionView
             eyebrow="LIBRARY / PERSONAL ARCHIVE"
-            title="你的论文书库"
-            description={`${savedIds.size} 篇已保存 · ${readIds.size} 篇已开始阅读`}
+            title="Your paper library"
+            description={`${savedIds.size} saved · ${readIds.size} started`}
             papers={libraryPapers}
-            emptyLabel="还没有保存论文。回到 Today，点击“保存”建立你的第一组阅读队列。"
+            emptyLabel="You have not saved any papers yet. Return to Today and select “Save” to build your first reading queue."
             savedIds={savedIds}
             readIds={readIds}
             onToggleSaved={toggleSaved}
@@ -1397,13 +1386,13 @@ export default function PaperOrbitClient({
             aria-labelledby="interest-title"
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <button className="modal-close" type="button" onClick={() => setSettingsOpen(false)} aria-label="关闭">
+            <button className="modal-close" type="button" onClick={() => setSettingsOpen(false)} aria-label="Close">
               ×
             </button>
             <p className="eyebrow">PERSONAL EDITOR</p>
-            <h2 id="interest-title">定义你的研究轨道</h2>
+            <h2 id="interest-title">Define your research orbit</h2>
             <p>
-              每天从扩展候选池中精选 10 篇；兴趣决定主轨道，保存、开始阅读和生成报告会持续校准排序。选择 2–5 个方向通常最有效。
+              Paper Orbit selects 10 papers each day from an expanded candidate pool. Your interests set the main trajectory, while saving, reading, and generating reports continuously refine the ranking. Choosing 2–5 areas usually works best.
             </p>
             <div className="viewer-card">
               <span aria-hidden="true">{viewer.initials}</span>
@@ -1422,12 +1411,12 @@ export default function PaperOrbitClient({
                     setAiSettingsOpen(true);
                   }}
                 >
-                  管理 API 连接
+                  Manage API connections
                 </button>
                 {viewer.localDevelopment ? (
-                  <span className="local-viewer-note">本地开发身份</span>
+                  <span className="local-viewer-note">Local development identity</span>
                 ) : (
-                  <a href="/signout-with-chatgpt?return_to=%2F">切换账号</a>
+                  <a href="/signout-with-chatgpt?return_to=%2F">Switch account</a>
                 )}
               </div>
             </div>
@@ -1448,10 +1437,10 @@ export default function PaperOrbitClient({
             <section className="feedback-history" aria-labelledby="feedback-history-title">
               <div>
                 <p className="eyebrow">LOCAL FEEDBACK</p>
-                <h3 id="feedback-history-title">论文反馈记录</h3>
+                <h3 id="feedback-history-title">Paper feedback history</h3>
               </div>
               <p>
-                这些信号只保存在当前浏览器。即使论文暂时离开今日列表，也能在这里清除反馈。
+                These signals stay in this browser. You can clear feedback here even after a paper leaves today’s list.
               </p>
               {paperFeedback.length ? (
                 <ul>
@@ -1470,24 +1459,24 @@ export default function PaperOrbitClient({
                         <button
                           type="button"
                           onClick={() => clearStoredFeedback(item)}
-                          aria-label={`清除 ${paper?.title ?? item.paperId} 的反馈`}
+                          aria-label={`Clear feedback for ${paper?.title ?? item.paperId}`}
                         >
-                          清除
+                          Clear
                         </button>
                       </li>
                     );
                   })}
                 </ul>
               ) : (
-                <p className="feedback-history-empty">尚未记录显式论文反馈。</p>
+                <p className="feedback-history-empty">No explicit paper feedback has been recorded.</p>
               )}
             </section>
             <div className="modal-actions">
               <button className="text-button" type="button" onClick={() => setSettingsOpen(false)}>
-                取消
+                Cancel
               </button>
               <button className="primary-button" type="button" onClick={saveInterests}>
-                保存并刷新选刊
+                Save and refresh selections
               </button>
             </div>
           </section>
@@ -1503,22 +1492,22 @@ export default function PaperOrbitClient({
             aria-labelledby="ai-connect-title"
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <button className="modal-close" type="button" onClick={() => setAiSettingsOpen(false)} aria-label="关闭">
+            <button className="modal-close" type="button" onClick={() => setAiSettingsOpen(false)} aria-label="Close">
               ×
             </button>
             <p className="eyebrow">PERSONAL API CONNECTIONS / ENCRYPTED SESSION</p>
-            <h2 id="ai-connect-title">连接你的研究服务</h2>
+            <h2 id="ai-connect-title">Connect your research services</h2>
             <p>
-              每位 READER 使用自己的外部服务额度。OpenAI 或兼容服务用于 PDF 全文 Copilot；arXiv 公开检索不需要 Key；可选的 Semantic Scholar Key 用于更稳定地读取引用与高影响引用信号。
+              Each READER uses their own external service quota. OpenAI or a compatible provider powers the full-PDF Copilot; public arXiv search requires no key; and an optional Semantic Scholar key provides more reliable citation and influential-citation signals.
             </p>
 
             <section className="provider-section" aria-labelledby="openai-provider-title">
               <div className="provider-heading">
                 <div>
                   <span>FULL-TEXT COPILOT</span>
-                  <h3 id="openai-provider-title">OpenAI 兼容 API</h3>
+                  <h3 id="openai-provider-title">OpenAI-compatible API</h3>
                 </div>
-                <small>个人计费</small>
+                <small>Personal billing</small>
               </div>
 
               <div className={`ai-connection-card ${aiConnection.connected ? "connected" : ""}`}>
@@ -1527,14 +1516,14 @@ export default function PaperOrbitClient({
                   <strong>
                     {aiConnection.connected
                       ? aiConnection.source === "session"
-                        ? "AI 文本链路已实测连接"
-                        : "共享 AI 已配置"
-                      : "尚未连接真实 AI"}
+                        ? "AI text path verified and connected"
+                        : "Shared AI configured"
+                      : "No live AI connected"}
                   </strong>
                   <small>
                     {aiConnection.connected
-                      ? `${aiConnection.model ?? "未命名模型"} · ${aiProviderLabel(aiConnection.baseUrl)} · ${aiConnection.source === "session" ? `${viewer.localDevelopment ? "本机加密会话" : "你的临时会话"} · /models + 纯文本 /responses 已实测 · PDF 逐篇核验` : "仅管理账号的站点共享连接"}`
-                      : "普通用户未连接个人 Key 时只提供不消耗 token 的摘要预览。"}
+                      ? `${aiConnection.model ?? "Unnamed model"} · ${aiProviderLabel(aiConnection.baseUrl)} · ${aiConnection.source === "session" ? `${viewer.localDevelopment ? "Local encrypted session" : "Your temporary session"} · /models and text-only /responses verified · PDF checked per paper` : "Site-wide shared connection for privileged accounts only"}`
+                      : "Without a personal key, readers receive a token-free abstract preview only."}
                   </small>
                 </div>
               </div>
@@ -1558,7 +1547,7 @@ export default function PaperOrbitClient({
                       />
                     </label>
                     <label className="ai-provider-field" htmlFor="openai-model">
-                      <span>模型 ID</span>
+                      <span>Model ID</span>
                       <input
                         id="openai-model"
                         type="text"
@@ -1574,7 +1563,7 @@ export default function PaperOrbitClient({
                     </label>
                   </div>
                   <label htmlFor="openai-api-key">
-                    {aiConnection.source === "session" ? "重新输入 API Key 以更换连接" : "个人 API Key"}
+                    {aiConnection.source === "session" ? "Enter an API key to replace this connection" : "Personal API key"}
                   </label>
                   <div className="ai-key-row">
                     <input
@@ -1582,7 +1571,7 @@ export default function PaperOrbitClient({
                       type="password"
                       value={apiKeyInput}
                       onChange={(event) => setApiKeyInput(event.target.value)}
-                      placeholder="你的 API Key（不限 sk- 前缀）"
+                      placeholder="Your API key (no sk- prefix required)"
                       autoComplete="off"
                       autoCapitalize="none"
                       autoCorrect="off"
@@ -1598,21 +1587,21 @@ export default function PaperOrbitClient({
                         || aiConnectionBusy
                       }
                     >
-                      {aiConnectionBusy ? "连接中…" : aiConnection.source === "session" ? "验证并更换" : "验证并连接"}
+                      {aiConnectionBusy ? "Connecting…" : aiConnection.source === "session" ? "Verify and replace" : "Verify and connect"}
                     </button>
                   </div>
                   <small>
                     {viewer.localDevelopment
-                      ? "Base URL、模型和 Key 会以 AES-GCM 密文保存在仅属于 localhost 的 HttpOnly Cookie 中；本机解密密钥位于 Git 忽略的私有目录。它们不会进入 localStorage、数据库、仓库或生产站点，最长保留 90 天。当前可连接 http://127.0.0.1 或 http://localhost 回环 API；其他地址仍必须是公网 HTTPS。"
-                      : "Base URL、模型和 Key 会一起保存在服务端加密的 HttpOnly 浏览器会话中；不写入 localStorage、数据库或仓库，关闭浏览器或连接满 12 小时后失效。地址必须是公网 HTTPS API 根路径。"}
+                      ? "The Base URL, model, and key are AES-GCM encrypted in an HttpOnly cookie scoped to localhost. The local decryption secret lives in a private, Git-ignored directory. These values never enter localStorage, a database, the repository, or the production site, and are retained for at most 90 days. This mode allows loopback APIs at http://127.0.0.1 or http://localhost; every other address must still use public HTTPS."
+                      : "The Base URL, model, and key are stored together in a server-encrypted HttpOnly browser session. They are never written to localStorage, a database, or the repository, and expire when the browser closes or after 12 hours. The address must be a public HTTPS API root."}
                   </small>
                   <small className="ai-provider-disclosure">
-                    点击验证时会先调用 <code>/models</code>，再执行一次极小的真实 <code>/responses</code> 纯文本推理，产生少量 token；这只能证明模型与文本接口可用，不等于已经验证 PDF。每次论文提问前，PaperOrbit 会先独立核验 arXiv PDF，再通过 <code>input_file</code> 交给模型；自定义服务优先使用流式 Responses 以减少长请求超时。服务会收到论文 PDF 地址、你的问题、论文元数据和最近对话，请只连接你信任的服务商。
+                    Verification first calls <code>/models</code>, then runs one tiny live text-only <code>/responses</code> inference that consumes a small number of tokens. This proves only that the model and text endpoint work; it does not validate PDF support. Before every paper question, Paper Orbit independently verifies the arXiv PDF and then passes it to the model through <code>input_file</code>. Custom providers use streaming Responses when possible to reduce long-request timeouts. The provider receives the paper’s PDF URL, your question, paper metadata, and recent conversation, so connect only a provider you trust.
                   </small>
                 </form>
               ) : (
                 <div className="ai-config-warning">
-                  服务器管理员还需要配置 <code>PAPER_ORBIT_SESSION_SECRET</code>，才能安全接收每位用户自己的 API 连接。
+                  The server administrator must configure <code>PAPER_ORBIT_SESSION_SECRET</code> before Paper Orbit can securely accept each user’s API connection.
                 </div>
               )}
 
@@ -1622,16 +1611,16 @@ export default function PaperOrbitClient({
 
               <div className="ai-connect-links">
                 <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer">
-                  创建 OpenAI API Key ↗
+                  Create an OpenAI API key ↗
                 </a>
                 <a href="https://platform.openai.com/settings/organization/billing/overview" target="_blank" rel="noreferrer">
-                  查看 API 计费 ↗
+                  View API billing ↗
                 </a>
               </div>
 
               {aiConnection.source === "session" ? (
                 <button className="provider-disconnect" type="button" onClick={() => void disconnectOpenAI()} disabled={aiConnectionBusy}>
-                  清除个人 AI 服务会话
+                  Clear personal AI service session
                 </button>
               ) : null}
             </section>
@@ -1640,17 +1629,17 @@ export default function PaperOrbitClient({
               <div className="provider-heading">
                 <div>
                   <span>PAPER DISCOVERY &amp; IMPACT</span>
-                  <h3 id="paper-data-provider-title">论文数据 API</h3>
+                  <h3 id="paper-data-provider-title">Paper data APIs</h3>
                 </div>
-                <small>按用户隔离</small>
+                <small>Isolated per user</small>
               </div>
 
               <div className="provider-status-grid">
                 <div className="provider-status connected">
                   <span aria-hidden="true">✓</span>
                   <div>
-                    <strong>arXiv 公开 API</strong>
-                    <small>检索、分类、日期与 PDF 地址 · 无需也不存在个人 API Key</small>
+                    <strong>Public arXiv API</strong>
+                    <small>Search, categories, dates, and PDF URLs · No personal API key exists or is required</small>
                   </div>
                 </div>
                 <div className={`provider-status ${researchConnection.semanticScholar.keyConnected ? "connected" : ""}`}>
@@ -1658,17 +1647,17 @@ export default function PaperOrbitClient({
                   <div>
                     <strong>
                       {researchConnection.semanticScholar.keyConnected
-                        ? "Semantic Scholar Key 已连接"
-                        : "Semantic Scholar 公开额度"}
+                        ? "Semantic Scholar key connected"
+                        : "Public Semantic Scholar quota"}
                     </strong>
                     <small>
                       {!researchConnectionReady
-                        ? "正在检查连接状态…"
+                        ? "Checking connection status…"
                         : researchConnection.semanticScholar.source === "session"
-                          ? `${viewer.localDevelopment ? "本机加密会话" : "你的临时会话"} · 引用与高影响引用`
+                          ? `${viewer.localDevelopment ? "Local encrypted session" : "Your temporary session"} · Citations and influential citations`
                           : researchConnection.semanticScholar.source === "shared"
-                            ? "仅管理账号的站点共享连接"
-                            : "无需 Key 也可使用，但高峰期可能受共享限流影响"}
+                            ? "Site-wide shared connection for privileged accounts only"
+                            : "Works without a key, but shared rate limits may apply during peak traffic"}
                     </small>
                   </div>
                 </div>
@@ -1678,8 +1667,8 @@ export default function PaperOrbitClient({
                 <form className="ai-connect-form" onSubmit={connectSemanticScholar}>
                   <label htmlFor="semantic-scholar-api-key">
                     {researchConnection.semanticScholar.source === "session"
-                      ? "更换个人 Semantic Scholar API Key"
-                      : "个人 Semantic Scholar API Key（可选）"}
+                      ? "Replace personal Semantic Scholar API key"
+                      : "Personal Semantic Scholar API key (optional)"}
                   </label>
                   <div className="ai-key-row">
                     <input
@@ -1696,19 +1685,19 @@ export default function PaperOrbitClient({
                     />
                     <button type="submit" disabled={!semanticScholarKeyInput.trim() || researchConnectionBusy}>
                       {researchConnectionBusy
-                        ? "连接中…"
+                        ? "Connecting…"
                         : researchConnection.semanticScholar.source === "session"
-                          ? "验证并更换"
-                          : "验证并连接"}
+                          ? "Verify and replace"
+                          : "Verify and connect"}
                     </button>
                   </div>
                   <small>
-                    Key 仅由 Paper Orbit 后端发送到 Semantic Scholar 的 <code>x-api-key</code> 请求头，并使用与 OpenAI Key 相同的加密会话边界。
+                    The key is sent only by the Paper Orbit backend in Semantic Scholar’s <code>x-api-key</code> header and uses the same encrypted-session boundary as the OpenAI key.
                   </small>
                 </form>
               ) : (
                 <div className="ai-config-warning">
-                  服务器管理员还需要配置 <code>PAPER_ORBIT_SESSION_SECRET</code>，才能安全接收个人论文数据 Key。
+                  The server administrator must configure <code>PAPER_ORBIT_SESSION_SECRET</code> before Paper Orbit can securely accept personal paper data keys.
                 </div>
               )}
 
@@ -1718,16 +1707,16 @@ export default function PaperOrbitClient({
 
               <div className="ai-connect-links">
                 <a href="https://info.arxiv.org/help/api/user-manual.html" target="_blank" rel="noreferrer">
-                  arXiv API 说明 ↗
+                  arXiv API documentation ↗
                 </a>
                 <a href="https://www.semanticscholar.org/product/api" target="_blank" rel="noreferrer">
-                  申请 Semantic Scholar API Key ↗
+                  Request a Semantic Scholar API key ↗
                 </a>
               </div>
 
               {researchConnection.semanticScholar.source === "session" ? (
                 <button className="provider-disconnect" type="button" onClick={() => void disconnectSemanticScholar()} disabled={researchConnectionBusy}>
-                  清除个人论文数据会话
+                  Clear personal paper data session
                 </button>
               ) : null}
             </section>
@@ -1735,11 +1724,11 @@ export default function PaperOrbitClient({
             <div className="modal-actions ai-modal-actions">
               <span>
                 {viewer.localDevelopment
-                  ? "所有个人 Key 只保存在本机加密会话中，最长 90 天，并可随时清除。"
-                  : "所有个人 Key 均绑定当前 ChatGPT 登录邮箱，并在 12 小时后失效。"}
+                  ? "All personal keys stay in local encrypted sessions for at most 90 days and can be cleared at any time."
+                  : "All personal keys are bound to the current ChatGPT sign-in email and expire after 12 hours."}
               </span>
               <button className="primary-button" type="button" onClick={() => setAiSettingsOpen(false)}>
-                完成
+                Done
               </button>
             </div>
           </section>
@@ -1755,23 +1744,23 @@ export default function PaperOrbitClient({
             aria-labelledby="report-title"
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <button className="modal-close" type="button" onClick={() => setActiveReport(null)} aria-label="关闭">
+            <button className="modal-close" type="button" onClick={() => setActiveReport(null)} aria-label="Close">
               ×
             </button>
             <p className="eyebrow">READING REPORT / {activeReport.paperId}</p>
             <h2 id="report-title">{activeReport.paperTitle}</h2>
             <div className="report-meta">
-              {new Date(activeReport.createdAt).toLocaleString("zh-CN")} · {activeReport.mode === "openai" ? "OpenAI PDF 全文分析" : "摘要辅助模式"}
+              {new Date(activeReport.createdAt).toLocaleString("en-US")} · {activeReport.mode === "openai" ? "OpenAI full-PDF analysis" : "Abstract-assisted mode"}
             </div>
             <div className="report-content markdown-body">
               <MarkdownText text={activeReport.content} />
             </div>
             <div className="modal-actions">
               <button className="text-button" type="button" onClick={() => navigator.clipboard.writeText(activeReport.content)}>
-                复制正文
+                Copy report
               </button>
               <button className="primary-button" type="button" onClick={() => downloadReport(activeReport)}>
-                下载 Markdown
+                Download Markdown
               </button>
             </div>
           </article>
@@ -1782,7 +1771,7 @@ export default function PaperOrbitClient({
         <span>{toast?.message}</span>
         {toast?.onAction ? (
           <button type="button" onClick={toast.onAction}>
-            {toast.actionLabel ?? "撤销"}
+            {toast.actionLabel ?? "Undo"}
           </button>
         ) : null}
       </div>
@@ -1835,23 +1824,23 @@ function PaperEntry({
             {paper.title}
           </a>
         </h3>
-        <p>{paper.zhSummary ?? paper.summary}</p>
+        <p>{paper.summary}</p>
         <div className="paper-byline">
           {paper.authors.slice(0, 4).join(" · ")}
           {paper.authors.length > 4 ? " et al." : ""}
         </div>
         {recommendation && onPaperFeedback ? (
           <details className="recommendation-details">
-            <summary>为什么推荐</summary>
+            <summary>Why this paper</summary>
             <p>{recommendation.reason}</p>
-            <div className="signal-grid" aria-label="推荐信号，满分 100">
+            <div className="signal-grid" aria-label="Recommendation signals, scored out of 100">
               {(
                 [
-                  ["相关度", recommendation.signals.relevance],
-                  ["本地偏好", recommendation.signals.affinity],
-                  ["新鲜度", recommendation.signals.freshness],
-                  ["影响力", recommendation.signals.influence],
-                  ["证据强度", recommendation.signals.evidence],
+                  ["Relevance", recommendation.signals.relevance],
+                  ["Local affinity", recommendation.signals.affinity],
+                  ["Freshness", recommendation.signals.freshness],
+                  ["Influence", recommendation.signals.influence],
+                  ["Evidence", recommendation.signals.evidence],
                 ] as Array<[string, number]>
               ).map(([label, value]) => (
                 <span key={label}>
@@ -1862,19 +1851,19 @@ function PaperEntry({
             </div>
             <dl className="recommendation-evidence">
               <div>
-                <dt>引用</dt>
+                <dt>Citations</dt>
                 <dd>{recommendation.citationCount ?? "—"}</dd>
               </div>
               <div>
-                <dt>高影响引用</dt>
+                <dt>Influential citations</dt>
                 <dd>{recommendation.influentialCitationCount ?? "—"}</dd>
               </div>
               <div>
-                <dt>多样性探索</dt>
-                <dd>{recommendation.exploration ? "是" : "否"}</dd>
+                <dt>Diversity exploration</dt>
+                <dd>{recommendation.exploration ? "Yes" : "No"}</dd>
               </div>
             </dl>
-            <div className="paper-feedback" role="group" aria-label={`评价 ${paper.title} 的推荐质量`}>
+            <div className="paper-feedback" role="group" aria-label={`Rate the recommendation quality for ${paper.title}`}>
               {(Object.keys(FEEDBACK_LABELS) as FeedbackKind[]).map((kind) => (
                 <button
                   key={kind}
@@ -1882,7 +1871,7 @@ function PaperEntry({
                   aria-pressed={feedback === kind}
                   className={feedback === kind ? "selected" : ""}
                   onClick={() => onPaperFeedback(paper, kind)}
-                  title={feedback === kind ? "再次点击可清除" : undefined}
+                  title={feedback === kind ? "Select again to clear" : undefined}
                 >
                   {FEEDBACK_LABELS[kind]}
                 </button>
@@ -1895,14 +1884,14 @@ function PaperEntry({
         <div className="score-block">
           <span>ORBIT SCORE</span>
           <strong>{paper.score}</strong>
-          <div className="score-line" aria-label={`推荐分 ${paper.score} 分`}>
+          <div className="score-line" aria-label={`Recommendation score: ${paper.score}`}>
             <i style={{ width: `${paper.score}%` }} />
           </div>
           <small className="score-reason">
-            {paper.recommendation?.reason ?? "兴趣、时效与研究信号综合排序"}
+            {paper.recommendation?.reason ?? "Ranked by interests, recency, and research signals"}
           </small>
         </div>
-        <span className="read-time">预计 {paper.minutes} 分钟</span>
+        <span className="read-time">About {paper.minutes} min</span>
         <div className="paper-actions">
           <button
             className={`save-button ${saved ? "saved" : ""}`}
@@ -1910,13 +1899,13 @@ function PaperEntry({
             aria-pressed={saved}
             onClick={() => onToggleSaved(paper.id)}
           >
-            {saved ? "✓ 已保存" : "+ 保存"}
+            {saved ? "✓ Saved" : "+ Save"}
           </button>
           <button className="report-button" type="button" onClick={() => onGenerateReport(paper)}>
-            生成报告
+            Generate report
           </button>
           <button className="read-button" type="button" onClick={() => onStartReading(paper)}>
-            {reading ? "继续阅读 ↗" : "开始阅读 ↗"}
+            {reading ? "Continue reading ↗" : "Start reading ↗"}
           </button>
         </div>
       </div>
@@ -1955,7 +1944,7 @@ type TodayViewProps = {
 };
 
 function formatPdfBytes(bytes: number | null | undefined) {
-  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) return "大小未知";
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) return "Unknown size";
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
@@ -2073,13 +2062,13 @@ function MarkdownText({ text }: { text: string }) {
 }
 
 function diagnosticTitle(category: string) {
-  if (category === "arxiv") return "arXiv PDF 获取故障";
-  if (category === "authentication") return "API 身份验证失败";
-  if (category === "quota") return "AI 服务额度或限流";
-  if (category === "provider-pdf") return "AI 服务的 PDF 能力不兼容";
-  if (category === "compatibility") return "AI 接口兼容性故障";
-  if (category === "communication") return "浏览器与 PaperOrbit 通讯中断";
-  return "AI 全文处理故障";
+  if (category === "arxiv") return "arXiv PDF retrieval failed";
+  if (category === "authentication") return "API authentication failed";
+  if (category === "quota") return "AI service quota or rate limit";
+  if (category === "provider-pdf") return "AI service PDF support is incompatible";
+  if (category === "compatibility") return "AI API compatibility failure";
+  if (category === "communication") return "Browser connection to Paper Orbit interrupted";
+  return "AI full-text processing failed";
 }
 
 function TodayView(props: TodayViewProps) {
@@ -2091,7 +2080,11 @@ function TodayView(props: TodayViewProps) {
 
   const completedThisWeek = Math.min(props.readIds.size, 10);
   const progress = Math.min(100, Math.max(10, completedThisWeek * 10));
-  const quickPrompts = ["用三句话解释核心贡献", "和同领域代表工作比较", "指出最值得复现的实验"];
+  const quickPrompts = [
+    "Explain the core contribution in three sentences",
+    "Compare it with representative work in the field",
+    "Identify the experiment most worth reproducing",
+  ];
   const today = new Date();
   const weekday = new Intl.DateTimeFormat("en-US", { weekday: "short" })
     .format(today)
@@ -2111,14 +2104,14 @@ function TodayView(props: TodayViewProps) {
     (message) => message.meta?.source === "fulltext-pdf",
   );
   const aiStatusLabel = !props.aiConnectionReady
-    ? "检查中"
+    ? "Checking"
     : !props.aiConnection.connected
-      ? "AI 未连接"
+      ? "AI not connected"
       : props.aiMode === "preview"
-        ? "安全降级"
+        ? "Safe fallback"
         : fulltextVerified
-          ? `${props.aiConnection.model ?? "OpenAI"} · 全文已验证`
-          : `${props.aiConnection.model ?? "OpenAI"} · 文本已验证`;
+          ? `${props.aiConnection.model ?? "OpenAI"} · Full text verified`
+          : `${props.aiConnection.model ?? "OpenAI"} · Text verified`;
 
   return (
     <div className="page-wrap">
@@ -2132,18 +2125,18 @@ function TodayView(props: TodayViewProps) {
           <p className="eyebrow">
             DAILY ORBIT · EDITION {String(edition).padStart(3, "0")}
           </p>
-          <h1>今天值得读的 <em>{props.feed.length}</em> 篇</h1>
+          <h1><em>{props.feed.length}</em> papers worth reading today</h1>
           <p className="edition-deck">
-            公开候选池只提供论文与影响力信号；兴趣、阅读反馈与主题去重全部在这台设备上计算，保留 10 篇最值得投入注意力的工作。
+            The public candidate pool provides only papers and influence signals. Your interests, reading feedback, and topic diversity are computed entirely on this device to select the 10 papers most worthy of your attention.
           </p>
         </div>
         <div className="edition-controls">
           <span>{props.refreshNote}</span>
           <button type="button" onClick={props.onRefresh} disabled={props.refreshing}>
-            {props.refreshing ? "扫描中…" : "刷新今日选刊 ↻"}
+            {props.refreshing ? "Scanning…" : "Refresh today's selection ↻"}
           </button>
         </div>
-        <div className="interest-strip" aria-label="当前研究兴趣">
+        <div className="interest-strip" aria-label="Current research interests">
           {props.interests.map((interest) => (
             <span key={interest}>{interest}</span>
           ))}
@@ -2153,7 +2146,7 @@ function TodayView(props: TodayViewProps) {
       <div className="content-grid">
         <section className="paper-list" aria-labelledby="today-papers">
           <h2 id="today-papers" className="sr-only">
-            今日论文
+            Today’s papers
           </h2>
           {props.feed.map((paper, index) => (
             <PaperEntry
@@ -2192,12 +2185,12 @@ function TodayView(props: TodayViewProps) {
             <button className="ai-connection-button" type="button" onClick={props.onOpenAiSettings}>
               <span aria-hidden="true">{props.aiConnection.connected ? "●" : "○"}</span>
               {props.aiConnection.connected
-                ? `${props.aiConnection.source === "session" ? "个人 AI 已连接" : "共享 OpenAI 已连接"} · 管理`
-                : "连接 AI 服务 · 启用 PDF 全文阅读"}
+                ? `${props.aiConnection.source === "session" ? "Personal AI connected" : "Shared OpenAI connected"} · Manage`
+                : "Connect an AI service · Enable full-PDF reading"}
             </button>
 
             <label className="paper-select-label" htmlFor="copilot-paper">
-              当前论文
+              Current paper
             </label>
             <select
               id="copilot-paper"
@@ -2227,21 +2220,21 @@ function TodayView(props: TodayViewProps) {
                     {message.meta ? (
                       <div className={`ai-run-meta ${message.meta.source === "fulltext-pdf" ? "fulltext" : "preview"}`}>
                         <span>
-                          {message.meta.source === "fulltext-pdf" ? "PDF 全文" : "摘要预览"}
+                          {message.meta.source === "fulltext-pdf" ? "Full PDF" : "Abstract preview"}
                           {message.meta.model ? ` · ${message.meta.model}` : ""}
-                          {message.meta.pdfDetail === "high" ? " · 图表增强" : ""}
+                          {message.meta.pdfDetail === "high" ? " · Enhanced figure detail" : ""}
                         </span>
                         {message.meta.usage ? (
                           <small>
-                            本次输入 {message.meta.usage.inputTokens.toLocaleString("zh-CN")} · 输出 {message.meta.usage.outputTokens.toLocaleString("zh-CN")} tokens
+                            Input {message.meta.usage.inputTokens.toLocaleString("en-US")} · Output {message.meta.usage.outputTokens.toLocaleString("en-US")} tokens
                           </small>
                         ) : null}
                         {message.meta.diagnostic?.arxiv?.available ? (
                           <small>
-                            arXiv 已核验 · {formatPdfBytes(message.meta.diagnostic.arxiv.bytes)}
-                            {message.meta.diagnostic.provider?.transport === "sse" ? " · 流式传输" : ""}
+                            arXiv verified · {formatPdfBytes(message.meta.diagnostic.arxiv.bytes)}
+                            {message.meta.diagnostic.provider?.transport === "sse" ? " · Streaming transport" : ""}
                             {(message.meta.diagnostic.provider?.attempts ?? 1) > 1
-                              ? ` · 自动恢复 ${message.meta.diagnostic.provider?.attempts} 次尝试`
+                              ? ` · Recovered after ${message.meta.diagnostic.provider?.attempts} attempts`
                               : ""}
                           </small>
                         ) : null}
@@ -2253,27 +2246,27 @@ function TodayView(props: TodayViewProps) {
                         <ul>
                           {message.diagnostic.arxiv ? (
                             <li>
-                              arXiv：{message.diagnostic.arxiv.available
-                                ? `PDF 可读取（${formatPdfBytes(message.diagnostic.arxiv.bytes)}）`
-                                : `PDF 未通过核验${message.diagnostic.arxiv.status ? `（HTTP ${message.diagnostic.arxiv.status}）` : ""}`}
+                              arXiv: {message.diagnostic.arxiv.available
+                                ? `PDF available (${formatPdfBytes(message.diagnostic.arxiv.bytes)})`
+                                : `PDF verification failed${message.diagnostic.arxiv.status ? ` (HTTP ${message.diagnostic.arxiv.status})` : ""}`}
                             </li>
                           ) : null}
                           {message.diagnostic.provider ? (
                             <li>
-                              AI 服务：{message.diagnostic.provider.textProbe === "passed"
-                                ? "文本连接正常，但本次全文处理失败"
+                              AI service: {message.diagnostic.provider.textProbe === "passed"
+                                ? "Text connection is healthy, but this full-text request failed"
                                 : message.diagnostic.provider.textProbe === "failed"
-                                  ? "文本探针也失败，服务或上游当前不可用"
+                                  ? "The text probe also failed; the service or its upstream is currently unavailable"
                                   : message.diagnostic.provider.status
-                                    ? `全文请求返回 HTTP ${message.diagnostic.provider.status}`
-                                    : "未完成全文请求"}
+                                    ? `The full-text request returned HTTP ${message.diagnostic.provider.status}`
+                                    : "The full-text request did not complete"}
                             </li>
                           ) : null}
-                          <li>诊断号：{message.diagnostic.id}</li>
+                          <li>Diagnostic ID: {message.diagnostic.id}</li>
                         </ul>
                         {message.retryPrompt && message.diagnostic.retryable ? (
                           <button type="button" onClick={() => props.onAskAi(message.retryPrompt)} disabled={props.aiBusy}>
-                            重试本次问题
+                            Retry this question
                           </button>
                         ) : null}
                       </div>
@@ -2284,13 +2277,13 @@ function TodayView(props: TodayViewProps) {
               {props.aiBusy ? (
                 <div className="chat-message assistant typing">
                   <span>PO</span>
-                  <p>正在核验 arXiv PDF 并通过稳定链路交给模型；长论文可能需要 1–3 分钟<span aria-hidden="true">…</span></p>
+                  <p>Verifying the arXiv PDF and sending it to the model through a stable connection. Long papers may take 1–3 minutes<span aria-hidden="true">…</span></p>
                 </div>
               ) : null}
             </div>
 
             {!props.aiConnection.connected ? (
-              <p className="ai-preview-note">未连接时不会消耗 token；返回的是摘要预览，不是模型回答。</p>
+              <p className="ai-preview-note">No tokens are consumed while disconnected. Responses are abstract previews, not model-generated answers.</p>
             ) : null}
 
             <div className="quick-prompts">
@@ -2309,7 +2302,7 @@ function TodayView(props: TodayViewProps) {
               }}
             >
               <label className="sr-only" htmlFor="ai-question">
-                向论文助手提问
+                Ask the paper assistant
               </label>
               <textarea
                 id="ai-question"
@@ -2327,15 +2320,15 @@ function TodayView(props: TodayViewProps) {
                     props.onAskAi();
                   }
                 }}
-                placeholder="问这篇论文的方法、公式、实验或局限…（Enter 发送，Shift+Enter 换行）"
+                placeholder="Ask about the paper's method, equations, experiments, or limitations… (Enter to send, Shift+Enter for a new line)"
                 rows={3}
               />
-              <button type="submit" disabled={!props.aiInput.trim() || props.aiBusy} aria-label="发送问题">
+              <button type="submit" disabled={!props.aiInput.trim() || props.aiBusy} aria-label="Send question">
                 ↑
               </button>
             </form>
             <button className="deep-read-button" type="button" onClick={props.onDeepRead} disabled={props.aiBusy}>
-              让全文 Copilot 深挖这篇论文 ↗
+              Ask the full-text Copilot for a deep analysis ↗
             </button>
           </section>
 
@@ -2343,11 +2336,11 @@ function TodayView(props: TodayViewProps) {
             <div className="aside-heading compact">
               <div>
                 <p>WEEK 29 / READING LOG</p>
-                <h2 id="progress-title">本周阅读进度</h2>
+                <h2 id="progress-title">This week’s reading progress</h2>
               </div>
               <strong>{completedThisWeek}/10</strong>
             </div>
-            <div className="week-days" aria-label={`本周完成 ${completedThisWeek} 篇`}>
+            <div className="week-days" aria-label={`${completedThisWeek} papers completed this week`}>
               {["M", "T", "W", "T", "F", "S", "S"].map((day, index) => (
                 <div key={`${day}-${index}`} className={index < Math.min(completedThisWeek, 7) ? "done" : index === 6 ? "today" : ""}>
                   <span>{day}</span>
@@ -2359,9 +2352,9 @@ function TodayView(props: TodayViewProps) {
               <i style={{ width: `${progress}%` }} />
             </div>
             <div className="progress-facts">
-              <div><strong>{props.readIds.size}</strong><span>已开始</span></div>
-              <div><strong>{props.savedIds.size}</strong><span>待阅读</span></div>
-              <div><strong>{props.reports.length}</strong><span>份报告</span></div>
+              <div><strong>{props.readIds.size}</strong><span>Started</span></div>
+              <div><strong>{props.savedIds.size}</strong><span>To read</span></div>
+              <div><strong>{props.reports.length}</strong><span>Reports</span></div>
             </div>
           </section>
 
@@ -2404,32 +2397,32 @@ function DiscoverView(props: DiscoverViewProps) {
     <div className="page-wrap collection-page discover-page">
       <section className="collection-header discover-header">
         <p className="eyebrow">DISCOVER / ARXIV INDEX</p>
-        <h1>从整个 arXiv 发现下一篇</h1>
+        <h1>Discover your next paper across arXiv</h1>
         <p>
-          用结构化条件组合标题、作者、摘要、分类与年份；Paper Orbit 只生成安全查询，不接受原始 arXiv 语法。
+          Combine title, author, abstract, category, and year with structured filters. Paper Orbit generates safe queries and does not accept raw arXiv query syntax.
         </p>
 
         <form className="advanced-search" onSubmit={props.onSubmit}>
           <div className="advanced-search-main">
-            <label htmlFor="discover-query">关键词、作者或 arXiv ID</label>
+            <label htmlFor="discover-query">Keywords, author, or arXiv ID</label>
             <div>
               <input
                 id="discover-query"
                 value={props.query}
                 onChange={(event) => props.onQueryChange(event.target.value)}
-                placeholder="例如 world models、Fei-Fei Li、2607.08639"
+                placeholder="For example: world models, Fei-Fei Li, or 2607.08639"
                 autoComplete="off"
                 aria-describedby="search-status"
               />
               <button type="submit" disabled={!props.query.trim() || props.loading}>
-                {props.loading ? "检索中…" : "检索 arXiv"}
+                {props.loading ? "Searching…" : "Search arXiv"}
               </button>
             </div>
           </div>
 
           <div className="advanced-search-grid">
             <label>
-              <span>字段</span>
+              <span>Field</span>
               <select
                 value={props.filters.field}
                 onChange={(event) =>
@@ -2438,14 +2431,14 @@ function DiscoverView(props: DiscoverViewProps) {
                     event.target.value as ArxivSearchField,
                   )}
               >
-                <option value="all">全部字段</option>
-                <option value="title">标题</option>
-                <option value="author">作者</option>
-                <option value="abstract">摘要</option>
+                <option value="all">All fields</option>
+                <option value="title">Title</option>
+                <option value="author">Author</option>
+                <option value="abstract">Abstract</option>
               </select>
             </label>
             <label>
-              <span>匹配</span>
+              <span>Match</span>
               <select
                 value={props.filters.match}
                 onChange={(event) =>
@@ -2454,28 +2447,28 @@ function DiscoverView(props: DiscoverViewProps) {
                     event.target.value as ArxivSearchMatch,
                   )}
               >
-                <option value="all">包含全部词</option>
-                <option value="any">包含任一词</option>
-                <option value="phrase">精确短语</option>
+                <option value="all">All terms</option>
+                <option value="any">Any term</option>
+                <option value="phrase">Exact phrase</option>
               </select>
             </label>
             <label className="exclude-filter">
-              <span>排除词</span>
+              <span>Exclude terms</span>
               <input
                 value={props.filters.exclude}
                 onChange={(event) =>
                   props.onFilterChange("exclude", event.target.value)}
-                placeholder="例如 survey review"
+                placeholder="For example: survey review"
               />
             </label>
             <label>
-              <span>分类</span>
+              <span>Category</span>
               <select
                 value={props.filters.category}
                 onChange={(event) =>
                   props.onFilterChange("category", event.target.value)}
               >
-                <option value="">全部分类</option>
+                <option value="">All categories</option>
                 <option value="cs.RO">cs.RO · Robotics</option>
                 <option value="cs.CV">cs.CV · Computer Vision</option>
                 <option value="cs.AI">cs.AI · Artificial Intelligence</option>
@@ -2486,7 +2479,7 @@ function DiscoverView(props: DiscoverViewProps) {
               </select>
             </label>
             <label>
-              <span>起始年份</span>
+              <span>From year</span>
               <input
                 type="number"
                 inputMode="numeric"
@@ -2499,7 +2492,7 @@ function DiscoverView(props: DiscoverViewProps) {
               />
             </label>
             <label>
-              <span>结束年份</span>
+              <span>To year</span>
               <input
                 type="number"
                 inputMode="numeric"
@@ -2512,7 +2505,7 @@ function DiscoverView(props: DiscoverViewProps) {
               />
             </label>
             <label>
-              <span>排序依据</span>
+              <span>Sort by</span>
               <select
                 value={props.filters.sort}
                 onChange={(event) =>
@@ -2521,13 +2514,13 @@ function DiscoverView(props: DiscoverViewProps) {
                     event.target.value as ArxivSearchSort,
                   )}
               >
-                <option value="relevance">相关度</option>
-                <option value="submittedDate">提交时间</option>
-                <option value="lastUpdatedDate">更新时间</option>
+                <option value="relevance">Relevance</option>
+                <option value="submittedDate">Submission date</option>
+                <option value="lastUpdatedDate">Last updated</option>
               </select>
             </label>
             <label>
-              <span>顺序</span>
+              <span>Order</span>
               <select
                 value={props.filters.order}
                 onChange={(event) =>
@@ -2536,31 +2529,31 @@ function DiscoverView(props: DiscoverViewProps) {
                     event.target.value as ArxivSearchOrder,
                   )}
               >
-                <option value="descending">降序</option>
-                <option value="ascending">升序</option>
+                <option value="descending">Descending</option>
+                <option value="ascending">Ascending</option>
               </select>
             </label>
             <label>
-              <span>每页数量</span>
+              <span>Results per page</span>
               <select
                 value={props.filters.limit}
                 onChange={(event) =>
                   props.onFilterChange("limit", Number(event.target.value))}
               >
                 {[10, 20, 30, 50].map((limit) => (
-                  <option key={limit} value={limit}>{limit} 篇</option>
+                  <option key={limit} value={limit}>{limit} papers</option>
                 ))}
               </select>
             </label>
           </div>
 
           <div className="advanced-search-actions">
-            <button type="button" onClick={props.onClear}>清除条件</button>
-            <small>修改关键词或筛选后会从第 1 页重新检索。</small>
+            <button type="button" onClick={props.onClear}>Clear filters</button>
+            <small>Changing the query or filters restarts the search from page 1.</small>
           </div>
         </form>
 
-        <div className="search-suggestions" aria-label="搜索建议">
+        <div className="search-suggestions" aria-label="Search suggestions">
           {["physical reasoning", "vision-language-action", "world models", "AI for science"].map((query) => (
             <button key={query} type="button" onClick={() => props.onUseSuggestion(query)}>
               {query} ↗
@@ -2590,30 +2583,30 @@ function DiscoverView(props: DiscoverViewProps) {
         ) : (
           <div className="empty-state">
             <span aria-hidden="true">◎</span>
-            <h2>索引仍是空的</h2>
-            <p>输入主题、作者或 arXiv ID，也可以先选择一个结构化筛选条件。</p>
+            <h2>The index is still empty</h2>
+            <p>Enter a topic, author, or arXiv ID, or begin by choosing a structured filter.</p>
           </div>
         )}
       </section>
 
       {props.meta && props.meta.totalResults > 0 ? (
-        <nav className="search-pagination" aria-label="搜索结果分页">
+        <nav className="search-pagination" aria-label="Search result pagination">
           <button
             type="button"
             onClick={props.onPrevious}
             disabled={!props.meta.hasPrevious || props.loading}
           >
-            ← 上一页
+            ← Previous
           </button>
           <span>
-            第 {Math.floor(props.meta.start / props.meta.limit) + 1} 页 · 共 {props.meta.totalResults} 篇
+            Page {Math.floor(props.meta.start / props.meta.limit) + 1} · {props.meta.totalResults} papers total
           </span>
           <button
             type="button"
             onClick={props.onNext}
             disabled={!props.meta.hasNext || props.loading}
           >
-            下一页 →
+            Next →
           </button>
         </nav>
       ) : null}
@@ -2671,7 +2664,7 @@ function CollectionView(props: CollectionViewProps) {
         ) : (
           <div className="empty-state">
             <span aria-hidden="true">◎</span>
-            <h2>索引仍是空的</h2>
+            <h2>The index is still empty</h2>
             <p>{props.emptyLabel}</p>
           </div>
         )}
@@ -2692,8 +2685,8 @@ function ReportsView({ reports, onOpen, onDownload, onGoToday }: ReportsViewProp
     <div className="page-wrap collection-page reports-page">
       <section className="collection-header">
         <p className="eyebrow">REPORTS / RESEARCH MEMORY</p>
-        <h1>把阅读变成可返回的知识</h1>
-        <p>{reports.length} 份报告保存在这台设备上，可随时打开或导出 Markdown。</p>
+        <h1>Turn reading into knowledge you can revisit</h1>
+        <p>{reports.length} reports are stored on this device and can be opened or exported as Markdown at any time.</p>
       </section>
       {reports.length ? (
         <div className="report-index">
@@ -2701,13 +2694,13 @@ function ReportsView({ reports, onOpen, onDownload, onGoToday }: ReportsViewProp
             <article key={report.id}>
               <div className="report-number">{String(index + 1).padStart(2, "0")}</div>
               <div>
-                <p>{report.paperId} · {new Date(report.createdAt).toLocaleDateString("zh-CN")}</p>
+                <p>{report.paperId} · {new Date(report.createdAt).toLocaleDateString("en-US")}</p>
                 <h2>{report.paperTitle}</h2>
-                <span>{report.mode === "openai" ? "OpenAI 深度分析" : "摘要辅助模式"}</span>
+                <span>{report.mode === "openai" ? "OpenAI deep analysis" : "Abstract-assisted mode"}</span>
               </div>
               <div className="report-actions">
-                <button type="button" onClick={() => onOpen(report)}>打开报告</button>
-                <button type="button" onClick={() => onDownload(report)}>下载 .md</button>
+                <button type="button" onClick={() => onOpen(report)}>Open report</button>
+                <button type="button" onClick={() => onDownload(report)}>Download .md</button>
               </div>
             </article>
           ))}
@@ -2715,9 +2708,9 @@ function ReportsView({ reports, onOpen, onDownload, onGoToday }: ReportsViewProp
       ) : (
         <div className="empty-state report-empty">
           <span aria-hidden="true">¶</span>
-          <h2>还没有阅读报告</h2>
-          <p>在任意论文右侧点击“生成报告”，Paper Copilot 会整理问题、方法、贡献、证据和追问。</p>
-          <button className="primary-button" type="button" onClick={onGoToday}>回到今日选刊</button>
+          <h2>No reading reports yet</h2>
+          <p>Select “Generate report” beside any paper and Paper Copilot will organize its question, method, contributions, evidence, and follow-up questions.</p>
+          <button className="primary-button" type="button" onClick={onGoToday}>Return to today’s selection</button>
         </div>
       )}
     </div>
