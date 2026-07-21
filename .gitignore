@@ -42,6 +42,7 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+/artifacts/
 
 # Local-only Paper Orbit encryption state. Never commit or deploy this directory.
 /.paperorbit/
