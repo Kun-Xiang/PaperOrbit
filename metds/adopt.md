@@ -1,5 +1,5 @@
 ---
-code_name: app
+code_name: .
 language: zh
 adopted: 2026-07-22
 updated: 2026-07-22
@@ -26,8 +26,8 @@ Copilot, generates reading reports, and tracks your paper library and reading pr
 
 | 探测线 | 映射为 | 目标 | 置信度 | 备注 |
 |---|---|---|---|---|
-| 源码 | `CODE_NAME=app` | — | 高 | 核心 UI 与 API 均在 `app/`；`worker/`、`db/`、`tests/`、`scripts/`、`build/` 同属应用，保持原位 |
-| 运行时 | `PYTHON_HOME=/usr/bin/python3` | — | 中 | 真实运行时是 Node >= 22.13 + npm；该值仅让 `execs/run.sh` 的解释器检查通过（Python 3.9.6），后续研究需要 Python 实验环境时改为 Conda 派生 |
+| 源码 | `CODE_NAME=.` | — | likely，门 1 确认（2026-07-22） | 勘察候选为 `app/`（核心 UI 与 API），用户确认整个仓库根为源码目录：`worker/`、`db/`、`tests/`、`scripts/`、`build/` 与 `app/` 不可分割 |
+| 运行时 | `PYTHON_HOME=/usr/bin/python3` | — | likely，门 1 确认（2026-07-22） | 真实运行时是 Node >= 22.13 + npm；该值仅让 `execs/run.sh` 的解释器检查通过（Python 3.9.6）。机器上另有 `~/miniconda3`（base Python 3.13.5）；用户决定维持现值，待研究需要 Python 实验时由 `/star-env-builder` 建专用环境并切换为 `CONDA_HOME`+`ENV_NAME` 派生 |
 | 数据 | `datas/` | 无既有目录 | 高 | 应用无本地数据集；骨架新建，留待研究使用 |
 | 权重 | `inits/` | 无既有目录 | 高 | 应用无模型权重；骨架新建 |
 | 输出 | `wkdrs/` | 无既有目录 | 高 | 无既往实验输出树；骨架新建 |
@@ -48,6 +48,8 @@ Copilot, generates reading reports, and tracks your paper library and reading pr
 | 框架许可副本（MIT，来自 wanghao9610/STAR） | `LICENCE-STAR` | 已创建 |
 | 应用自身文件与启动器 | `package.json`、`scripts/dev-local.mjs`、全部 `app/**` | 原样留下，未搬动未改名 |
 | 测试环境清理补一行 `delete process.env.OPENAI_BASE_URL` | `tests/rendered-html.test.mjs` | 冲突已修：`run.sh` 会导出 `.env`，而该测试的环境清理列表缺此键，任何环境携带该变量时 `npm test` 都会失败 |
+| `survey` 重跑（2026-07-22）：`.env` 的 `CODE_NAME` 由 `app` 改为 `.` | `.env` | 门 1 确认后的唯一改写；`PYTHON_HOME` 维持原值；`bash execs/run.sh --list` 与 `test` 包装在新值下复验通过 |
+| `survey` 重跑（2026-07-22）：`datas/`、`inits/`、`wkdrs/` 软链判定 | — | 无既有数据 / 权重 / 输出树可链（certain），骨架目录原样保留，未建任何软链 |
 
 ## 4. 工作清单
 
@@ -73,7 +75,8 @@ Copilot, generates reading reports, and tracks your paper library and reading pr
 ## 6. 未决问题
 
 - 研究方向未定：推荐系统（`orbit-v3-local` 权重与衰减）、检索质量、Copilot 输出质量评测都是候选；由 `/star-plan-coach` 与用户确定，本记录不做预设。
-- Python 实验环境：当前 `PYTHON_HOME` 指向系统 Python 仅满足启动器检查；一旦研究计划需要真实 Python 实验（评测脚本、离线分析），改由 `CONDA_HOME`+`ENV_NAME` 派生并回填 §2。
+- Python 实验环境：门 1（2026-07-22）已定路径——现值维持 `/usr/bin/python3`，待研究计划需要真实 Python 实验时由 `/star-env-builder` 建专用 Conda 环境（机器已有 `~/miniconda3`）并回填 §2。
+- 文档一致性：`.env.example`、`AGENTS.md`、`README.md` 的 STAR 区块仍写着接入初稿的 `CODE_NAME=app`，与门 1 确认的 `CODE_NAME=.` 不一致。修正超出本 skill 的写入边界（其范围仅 `.env`、软链、`execs/`、本记录），由维护者或后续提交更正。
 - 生产部署边界：`STAR` 分支面向研究工作区，OpenAI Sites 部署流程仍以 `main` 为准；两者的同步节奏由用户决定。
 
 ## 7. 回填记录
