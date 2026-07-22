@@ -12,6 +12,10 @@ status:
   experiments: done
   risks: done
   milestones: done
+children:
+  - 00_feishu-api-probe_plan.md
+  - 01_feishu-sync-cli_plan.md
+  - 02_feishu-e2e-validation_plan.md
 ---
 
 # PaperOrbit 统一科研工作台 工程计划
@@ -105,3 +109,12 @@ status:
 **后续可选**（明确记录、本期不做）：书库供料 survey；STAR 产物回流网页展示。
 
 **资源需求**：仅飞书自建应用一项外部操作；无算力、无数据集；无投稿 venue（工程计划，时间线以里程碑序列代替日历）。
+
+## Sub-plans
+
+于 2026-07-22 按里程碑 / 阶段轴经 $star-plan-decomposer 拆解。
+执行顺序：00 → 01 → 02
+
+- `00_feishu-api-probe_plan.md` — 验证飞书自建应用凭据、云文档权限与 Markdown 导入任务 API 是否可用，裁决主路线或 Plan B。（→ §5 最大风险 / Kill criteria；§6 M0；依赖：—）
+- `01_feishu-sync-cli_plan.md` — 在 `scripts/` 中实现 `feishu-sync` CLI，并用 mock 覆盖参数解析、凭据校验、导入任务与批量同步行为。（→ §3 核心方法；§4 A1-A3/A5；§6 M1；依赖：00）
+- `02_feishu-e2e-validation_plan.md` — 用真实阅读报告与 survey 产物完成同步冒烟，验证中文、公式、表格与端到端交付质量。（→ §4 A4/A6；§6 M2；依赖：01）
