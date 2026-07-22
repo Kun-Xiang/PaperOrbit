@@ -1,0 +1,6 @@
+interface:
+  display_name: "Research Paper Reviewer"
+  short_description: "Persona review plus a claim audit against the repo"
+  default_prompt: "Use $star-paper-reviewer to review my draft and audit its claims against the results ledger."
+policy:
+  allow_implicit_invocation: false

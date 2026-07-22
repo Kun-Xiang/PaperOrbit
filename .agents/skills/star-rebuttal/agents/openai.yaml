@@ -1,0 +1,6 @@
+interface:
+  display_name: "Research Rebuttal"
+  short_description: "Triage reviews, plan evidence, draft the rebuttal"
+  default_prompt: "Use $star-rebuttal to triage my paper's reviews and plan the rebuttal experiments."
+policy:
+  allow_implicit_invocation: false

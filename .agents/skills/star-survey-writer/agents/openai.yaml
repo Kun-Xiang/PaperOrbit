@@ -1,0 +1,6 @@
+interface:
+  display_name: "Research Survey Writer"
+  short_description: "Funnel a field into a citation-verified survey"
+  default_prompt: "Use $star-survey-writer to write a survey of my field."
+policy:
+  allow_implicit_invocation: false
