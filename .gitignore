@@ -46,3 +46,16 @@ next-env.d.ts
 
 # Local-only Paper Orbit encryption state. Never commit or deploy this directory.
 /.paperorbit/
+
+# STAR research workspace: machine-local data, weights, and generated outputs
+# stay out of git; the .gitkeep markers keep the skeleton directories present.
+datas/*
+!datas/.gitkeep
+inits/*
+!inits/.gitkeep
+wkdrs/*
+!wkdrs/.gitkeep
+.cache/
+__pycache__/
+.ruff_cache/
+.pytest_cache/

@@ -162,3 +162,21 @@ npm test          # Build and verify product, API, search, and local recommendat
 - `.openai/hosting.json`: Sites project binding.
 
 The library, reading state, interests, behavioral profile, explicit feedback, candidate pool, and reports are stored by default in browser `localStorage` namespaced by the signed-in email. Clearing site data removes all of this content.
+
+## STAR research workspace (STAR branch)
+
+The `STAR` branch embeds this repository in the [STAR](https://github.com/wanghao9610/STAR)
+research workflow (MIT, `LICENCE-STAR`) so recommendation, retrieval, and Copilot ideas can
+be researched with a plan/experiment/paper pipeline without changing the product layout:
+application code stays in place (`CODE_NAME=app`), research artifacts live in `metds/`,
+`tasks/`, `wkdrs/`, and `paper/`, and 17 `star-*` agent skills are available from
+`.claude/skills/` (also mirrored for other agent tools). Quick start:
+
+```bash
+cp .env.example .env   # fill PaperOrbit vars; keep CODE_NAME=app and a valid PYTHON_HOME
+bash execs/run.sh --list
+bash execs/run.sh dev_local   # wraps npm run dev:local unchanged
+```
+
+See `metds/adopt.md` for the adoption record and `docs/mds/star-workflow/` for the
+workflow conventions.

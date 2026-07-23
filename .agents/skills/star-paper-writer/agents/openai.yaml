@@ -1,0 +1,6 @@
+interface:
+  display_name: "Research Paper Writer"
+  short_description: "Compile project artifacts into an anchored paper draft"
+  default_prompt: "Use $star-paper-writer to draft the paper from my project's method documents and results ledger."
+policy:
+  allow_implicit_invocation: false

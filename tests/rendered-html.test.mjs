@@ -6,6 +6,7 @@ process.env.PAPER_ORBIT_SESSION_SECRET =
   "paper-orbit-test-session-secret-with-more-than-32-characters";
 process.env.OPENAI_MODEL = "gpt-5.6";
 delete process.env.OPENAI_API_KEY;
+delete process.env.OPENAI_BASE_URL;
 delete process.env.SEMANTIC_SCHOLAR_API_KEY;
 delete process.env.PAPER_ORBIT_LOCAL_MODE;
 delete process.env.PAPER_ORBIT_LOCAL_REQUEST_TOKEN;

@@ -89,3 +89,28 @@ Because this repository contains `.openai/hosting.json`, use the installed Sites
 - Local development: `npm run dev:local` serves `http://localhost:3000` with a loopback-only development identity, permits `http://127.0.0.1:8080/v1`-style local providers, and retains encrypted local provider sessions for at most 90 days by reusing a Git-ignored local encryption secret. Each development process generates a private ingress marker that is added only to non-TLS loopback socket requests after deleting any client-supplied copy; forwarded headers cannot create a local identity. The loopback identity may alternatively chat through the Git-ignored `.env` credential (`OPENAI_API_KEY`/`OPENAI_MODEL`/`OPENAI_BASE_URL`) without a per-browser session. Production remains limited to 12-hour temporary sessions and keeps its existing URL and authentication policy.
 - Research metadata: arXiv uses its public API without a key; users may connect an encrypted personal Semantic Scholar key, while shared metadata credentials remain owner/manager-only.
 - Production AI key: not configured as of 2026-07-15, so the deployed Copilot uses safe preview mode.
+
+## STAR research workspace (STAR branch)
+
+The `STAR` branch overlays the [STAR](https://github.com/wanghao9610/STAR) research
+workflow onto this repository so PaperOrbit can be studied and extended as a research
+project. Framework files (MIT, see `LICENCE-STAR`) live under `.agents/skills/`,
+`.claude/skills/`, `.cursor/skills/`, and `docs/mds/star-workflow/`; the adoption
+record is `metds/adopt.md`.
+
+- Layout mapping: application code stays exactly where it is. `CODE_NAME=app` names
+  the core source directory; `worker/`, `db/`, `tests/`, and `scripts/` remain part of
+  the application. `metds/` holds methodology notes and plans, `tasks/<plan-name>/`
+  holds plan tool scripts, `wkdrs/` holds generated research outputs, `paper/` holds
+  manuscript sources, and `datas/`/`inits/` stay empty until an experiment needs them.
+- Runtime: the product runtime is Node >= 22.13 via npm and is unchanged. The `.env`
+  values `CODE_NAME`/`PYTHON_HOME` exist so the STAR launcher (`execs/run.sh`) can
+  resolve an interpreter and export project paths; point `PYTHON_HOME` at any python3
+  until a research plan actually needs a dedicated Conda environment.
+- Launchers: `bash execs/run.sh --list` shows wrapper scripts. `dev_local` and `test`
+  wrap `npm run dev:local` and `npm test` unchanged; the npm commands remain the
+  source of truth. Never edit `execs/run.sh`/`execs/update.sh` locally — they sync
+  from upstream STAR via `bash execs/update.sh`.
+- Research flow: start with `/star-plan-coach` (reads `metds/adopt.md` as the seed),
+  then `/star-plan-decomposer`, `/star-plan-executor`, and the paper-lifecycle skills.
+  Shared conventions live in `docs/mds/star-workflow/`.
